@@ -1,0 +1,28 @@
+[project]
+name = "magic"
+version = "0.0.0"
+description = "having a MODICUM of reproducibility in python requires MAGIC"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # all dependencies here mate
+    # one can `uv add ...`
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "basedpyright",
+
+]
+
+[project.scripts]
+hello = "magic.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+ packages = ["magic"]
