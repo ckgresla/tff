@@ -1,12 +1,18 @@
 [project]
-name = "magic"
+name = "tff"
 version = "0.0.0"
-description = "having a MODICUM of reproducibility in python requires MAGIC"
+description = "could a transformer, learn to form itself?"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # all dependencies here mate
-    # one can `uv add ...`
+    "equinox>=0.13.2",
+    # Pin JAX to 0.6.0 for CUDA compatibility (same as es-clip)
+    "fire>=0.7.1",
+    "jax[cuda]==0.6.0",
+    "jaxtyping>=0.3.3",
+    "numpy>=2.0.0",
+    "optax>=0.2.6",
+    "pydantic>=2.12.5",
 ]
 
 [build-system]
@@ -22,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-hello = "magic.__main__:main"
+hello = "tff.__main__:main"
 
 [tool.hatch.build.targets.wheel]
- packages = ["magic"]
+packages = ["tff"]
