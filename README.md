@@ -74,12 +74,51 @@ python -m tff.test_simple
 
 ## Training
 
+### Single GPU Training
+
 ```bash
-# Run training with default settings
-bash scripts/run-train.sh
+# Toy training (small model, quick test)
+./scripts/train/toy.sh
 
 # Or run directly
-python -m tff.train
+python -m tff.train_toy
+```
+
+### Multi-GPU Data Parallel Training
+
+The codebase implements clean, modern **data parallelism** using JAX sharding and Equinox.
+
+```bash
+# Train on 2 GPUs
+CUDA_VISIBLE_DEVICES=0,1 python -m tff.train_toy --data_parallel
+
+# Train on 4 GPUs
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m tff.train_toy --data_parallel
+
+# Or use the provided script (edit GPU selection inside)
+./scripts/train/toy_data_parallel.sh
+```
+
+**Key Features:**
+- ✨ SIMD-like code - no scattered conditionals
+- ✨ Computation follows data - JAX handles distribution
+- ✨ Same code works for 1 GPU or N GPUs
+- ✨ Detailed diagnostic output for verification
+
+**Requirements:**
+- Batch size must be divisible by number of GPUs
+- Example: `batch_size=8` works with 1, 2, 4, or 8 GPUs
+
+**See [DATA_PARALLEL.md](DATA_PARALLEL.md) for detailed documentation.**
+
+### Verify Data Parallel Setup
+
+```bash
+# Test on single GPU
+CUDA_VISIBLE_DEVICES=0 python -m tff.examples.verify_data_parallel
+
+# Test on 2 GPUs
+CUDA_VISIBLE_DEVICES=0,1 python -m tff.examples.verify_data_parallel --batch_size 8
 ```
 
 ## Environment Setup
