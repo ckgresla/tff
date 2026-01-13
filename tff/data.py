@@ -6,10 +6,46 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 from typing import Iterator
+from pathlib import Path
+import urllib.request
 
 
 class Enwik8Dataset:
     """Byte-level enwik8 dataset loader."""
+
+    @staticmethod
+    def download(save_path: str = "enwik8.zip", url: str = "http://mattmahoney.net/dc/enwik8.zip") -> str:
+        """
+        Download enwik8 dataset from the standard URL.
+
+        Args:
+            save_path: Path where to save the downloaded file
+            url: URL to download from (default: Matt Mahoney's enwik8)
+
+        Returns:
+            Path to the downloaded file
+        """
+        save_path = Path(save_path)
+
+        if save_path.exists():
+            print(f"Dataset already exists at {save_path}")
+            return str(save_path)
+
+        print(f"Downloading enwik8 from {url}...")
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def show_progress(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            if total_size > 0:
+                percent = min(100, downloaded * 100 / total_size)
+                mb_downloaded = downloaded / (1024 * 1024)
+                mb_total = total_size / (1024 * 1024)
+                print(f"\r  Progress: {percent:.1f}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end="")
+
+        urllib.request.urlretrieve(url, save_path, reporthook=show_progress)
+        print(f"\n✓ Downloaded to {save_path}")
+
+        return str(save_path)
 
     def __init__(self, data_path: str, seq_len: int = 256, split: str = "train"):
         """

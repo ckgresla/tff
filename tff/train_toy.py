@@ -23,39 +23,41 @@ def main(data_parallel: bool = False) -> None:
         model=ModelConfig(
             vocab_size=256,      # Byte-level
             d_model=128,         # Very small
-            num_layers=8,        # Just a few layers
-            num_heads=8,         # and heads
+            num_layers=4,        # Just a few layers
+            num_heads=4,         # and heads
             d_ff=512,            # 4x d_model
-            max_seq_len=1024,
+            max_seq_len=256,
             dropout_rate=0.1,
         ),
         data=DataConfig(
             data_path="/raid/datasets/enwiki8.zip",
-            seq_len=128,         # Short sequences
-            batch_size=1032,     # 1032 / 6 gpus for 172 micro batch size
-
+            seq_len=256,       # Short sequences
+            batch_size=64,     # something "divisible"
         ),
         training=TrainingConfig(
-            learning_rate=3e-4,
-            num_steps=25000,      # a bit more than a quick test (~25 min)
+            learning_rate=2e-4,
+            num_steps=10000,      # something like a quick test
             eval_every=1000,      # Eval often
             log_every=100,        # Log frequently
             seed=42,
             checkpoint_dir="checkpoints/toy",
             save_every=1000,
+            eval_on_start=True,
             data_parallel=data_parallel,  # Pass to config
+            # NOTE: all wandb config is done with env vars!
         ),
     )
 
     print("\nTOY TRAINING - Small model for quick testing")
     print(f"Data parallelism: {'ENABLED' if data_parallel else 'DISABLED'}")
-    print("This will train a tiny 2-layer transformer for 1000 steps.")
+    print("This will train a tiny 8-layer transformer for 25k steps.")
     if data_parallel:
         print("Batch will be split across all visible GPUs.")
-    print("Expected time: ~2-5 minutes on a single GPU\n")
+    if config.training.wandb_project:
+        print(f"W&B logging: ENABLED (project: {config.training.wandb_project})")
 
     # Train
-    model = train(config)
+    _ = train(config)
 
     checkpoint_dir = Path(config.training.checkpoint_dir).resolve()
     print(f"\nToy training complete!")

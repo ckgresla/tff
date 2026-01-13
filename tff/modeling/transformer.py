@@ -320,3 +320,76 @@ class GPT(eqx.Module):
         """Count the number of trainable parameters."""
         params = eqx.filter(self, eqx.is_inexact_array)
         return sum(p.size for p in jax.tree_util.tree_leaves(params))
+
+    def compute_metrics(self, grads: "GPT") -> dict[str, float]:
+        """Compute comprehensive training metrics.
+
+        Args:
+            grads: Gradient tree (same structure as model)
+
+        Returns:
+            Dictionary of metrics with string keys and float values
+        """
+        metrics = {}
+
+        # === Global gradient norm ===
+        grad_params = eqx.filter(grads, eqx.is_inexact_array)
+        grad_leaves = jax.tree_util.tree_leaves(grad_params)
+        global_grad_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in grad_leaves))
+        metrics["grad_norm/global"] = float(global_grad_norm)
+
+        # === Per-layer gradient norms ===
+        # Embeddings
+        wte_grads = eqx.filter(grads.wte, eqx.is_inexact_array)
+        wpe_grads = eqx.filter(grads.wpe, eqx.is_inexact_array)
+        metrics["grad_norm/wte"] = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(wte_grads))))
+        metrics["grad_norm/wpe"] = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(wpe_grads))))
+
+        # Per transformer block
+        for i, block_grad in enumerate(grads.blocks):
+            block_params = eqx.filter(block_grad, eqx.is_inexact_array)
+            block_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(block_params)))
+            metrics[f"grad_norm/block_{i}"] = float(block_norm)
+
+            # Attention subcomponents
+            attn_grads = eqx.filter(block_grad.attn, eqx.is_inexact_array)
+            attn_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(attn_grads)))
+            metrics[f"grad_norm/block_{i}_attn"] = float(attn_norm)
+
+            # MLP subcomponents
+            mlp_grads = eqx.filter(block_grad.mlp, eqx.is_inexact_array)
+            mlp_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(mlp_grads)))
+            metrics[f"grad_norm/block_{i}_mlp"] = float(mlp_norm)
+
+        # Final layer norm and head
+        ln_f_grads = eqx.filter(grads.ln_f, eqx.is_inexact_array)
+        lm_head_grads = eqx.filter(grads.lm_head, eqx.is_inexact_array)
+        metrics["grad_norm/ln_f"] = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(ln_f_grads))))
+        metrics["grad_norm/lm_head"] = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(lm_head_grads))))
+
+        # === Global parameter norm ===
+        model_params = eqx.filter(self, eqx.is_inexact_array)
+        model_leaves = jax.tree_util.tree_leaves(model_params)
+        global_param_norm = jnp.sqrt(sum(jnp.sum(p ** 2) for p in model_leaves))
+        metrics["param_norm/global"] = float(global_param_norm)
+
+        # === Per-layer parameter norms ===
+        # Embeddings
+        wte_params = eqx.filter(self.wte, eqx.is_inexact_array)
+        wpe_params = eqx.filter(self.wpe, eqx.is_inexact_array)
+        metrics["param_norm/wte"] = float(jnp.sqrt(sum(jnp.sum(p ** 2) for p in jax.tree_util.tree_leaves(wte_params))))
+        metrics["param_norm/wpe"] = float(jnp.sqrt(sum(jnp.sum(p ** 2) for p in jax.tree_util.tree_leaves(wpe_params))))
+
+        # Per transformer block
+        for i, block in enumerate(self.blocks):
+            block_params = eqx.filter(block, eqx.is_inexact_array)
+            block_norm = jnp.sqrt(sum(jnp.sum(p ** 2) for p in jax.tree_util.tree_leaves(block_params)))
+            metrics[f"param_norm/block_{i}"] = float(block_norm)
+
+        # Final layer norm and head
+        ln_f_params = eqx.filter(self.ln_f, eqx.is_inexact_array)
+        lm_head_params = eqx.filter(self.lm_head, eqx.is_inexact_array)
+        metrics["param_norm/ln_f"] = float(jnp.sqrt(sum(jnp.sum(p ** 2) for p in jax.tree_util.tree_leaves(ln_f_params))))
+        metrics["param_norm/lm_head"] = float(jnp.sqrt(sum(jnp.sum(p ** 2) for p in jax.tree_util.tree_leaves(lm_head_params))))
+
+        return metrics

@@ -6,7 +6,7 @@ set -e
 unset LD_LIBRARY_PATH
 
 # Configure GPUs to use for data parallelism via CUDA_VISIBLE_DEVICES
-# export CUDA_VISIBLE_DEVICES=0,1,4,5
+export CUDA_VISIBLE_DEVICES=0,1,4,5
 export JAX_PLATFORMS=cuda
 
 # some optimizations
@@ -25,6 +25,8 @@ echo "============================================"
 echo ""
 
 # Run training with data_parallel enabled.
+export WANDB_PROJECT="tff-development"
+export WANDB_NAME="wilburwright-v5"
 python -m tff.train_toy --data_parallel=True
 
 echo ""

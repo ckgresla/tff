@@ -14,6 +14,10 @@ from tff.config import (
     ModelConfig,
     DataConfig,
     TrainingConfig,
+    OptimizerConfig,
+    AdamWConfig,
+    AdamConfig,
+    SGDConfig,
 )
 
 # Checkpoint utilities
@@ -42,6 +46,9 @@ from tff.metrics import (
     TrainingInfo,
 )
 
+# Logging
+from tff.logging import TrainingLogger
+
 __all__ = [
     # Models
     "GPT",
@@ -56,6 +63,10 @@ __all__ = [
     "ModelConfig",
     "DataConfig",
     "TrainingConfig",
+    "OptimizerConfig",
+    "AdamWConfig",
+    "AdamConfig",
+    "SGDConfig",
     # Checkpoints
     "save_checkpoint",
     "load_checkpoint",
@@ -74,4 +85,6 @@ __all__ = [
     "print_training_summary",
     "StepMetrics",
     "TrainingInfo",
+    # Logging
+    "TrainingLogger",
 ]

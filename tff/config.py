@@ -1,10 +1,12 @@
 """Configuration objects for models and training using Pydantic."""
 
+import os
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, Discriminator
+from typing_extensions import Annotated
 
 
 class ModelConfig(BaseModel):
@@ -33,12 +35,60 @@ class DataConfig(BaseModel):
         frozen = True
 
 
+# Optimizer configurations (discriminated union)
+class AdamWConfig(BaseModel):
+    """Configuration for AdamW optimizer."""
+
+    name: Literal["adamw"] = "adamw"
+    learning_rate: float = Field(default=3e-4, gt=0.0, description="Learning rate")
+    beta1: float = Field(default=0.9, ge=0.0, le=1.0, description="Adam beta1 (first moment decay)")
+    beta2: float = Field(default=0.999, ge=0.0, le=1.0, description="Adam beta2 (second moment decay)")
+    eps: float = Field(default=1e-8, gt=0.0, description="Epsilon for numerical stability")
+    weight_decay: float = Field(default=0.01, ge=0.0, description="Weight decay coefficient")
+
+    class Config:
+        frozen = True
+
+
+class AdamConfig(BaseModel):
+    """Configuration for Adam optimizer."""
+
+    name: Literal["adam"] = "adam"
+    learning_rate: float = Field(default=3e-4, gt=0.0, description="Learning rate")
+    beta1: float = Field(default=0.9, ge=0.0, le=1.0, description="Adam beta1 (first moment decay)")
+    beta2: float = Field(default=0.999, ge=0.0, le=1.0, description="Adam beta2 (second moment decay)")
+    eps: float = Field(default=1e-8, gt=0.0, description="Epsilon for numerical stability")
+
+    class Config:
+        frozen = True
+
+
+class SGDConfig(BaseModel):
+    """Configuration for SGD optimizer with optional momentum."""
+
+    name: Literal["sgd"] = "sgd"
+    learning_rate: float = Field(default=1e-2, gt=0.0, description="Learning rate")
+    momentum: float = Field(default=0.0, ge=0.0, le=1.0, description="Momentum coefficient (0 for no momentum)")
+    nesterov: bool = Field(default=False, description="Use Nesterov momentum")
+
+    class Config:
+        frozen = True
+
+
+# Union of all optimizer configs with discriminator on 'name' field
+OptimizerConfig = Annotated[
+    Union[AdamWConfig, AdamConfig, SGDConfig],
+    Discriminator('name')
+]
+
+
 class TrainingConfig(BaseModel):
     """Configuration for training hyperparameters."""
 
-    learning_rate: float = Field(default=3e-4, gt=0.0, description="Learning rate")
+    optimizer: OptimizerConfig = Field(default_factory=AdamWConfig, description="Optimizer configuration")
     num_steps: int = Field(default=10000, gt=0, description="Total training steps")
     eval_every: int = Field(default=500, gt=0, description="Evaluate every N steps")
+    eval_on_start: bool = Field(default=True, description="Evaluate model before training starts")
     log_every: int = Field(default=100, gt=0, description="Log every N steps")
     seed: int = Field(default=42, description="Random seed for reproducibility")
 
@@ -52,6 +102,32 @@ class TrainingConfig(BaseModel):
         description="Enable data parallelism across all visible devices. "
         "Batch will be split evenly across devices. "
         "Use CUDA_VISIBLE_DEVICES to control which GPUs are used."
+    )
+
+    # Weights & Biases logging (read from environment variables)
+    wandb_project: Optional[str] = Field(
+        default_factory=lambda: os.environ.get("WANDB_PROJECT"),
+        description="W&B project name from WANDB_PROJECT env var. If None, wandb logging is disabled."
+    )
+    wandb_entity: Optional[str] = Field(
+        default_factory=lambda: os.environ.get("WANDB_ENTITY"),
+        description="W&B team/entity name from WANDB_ENTITY env var."
+    )
+    wandb_name: Optional[str] = Field(
+        default_factory=lambda: os.environ.get("WANDB_NAME"),
+        description="W&B run name from WANDB_NAME env var. If None, wandb generates a name."
+    )
+    wandb_tags: Optional[list[str]] = Field(
+        default_factory=lambda: (
+            os.environ.get("WANDB_TAGS").split(",")
+            if os.environ.get("WANDB_TAGS")
+            else None
+        ),
+        description="W&B tags from WANDB_TAGS env var (comma-separated, e.g., 'train,model-v2')."
+    )
+    wandb_run_url: Optional[str] = Field(
+        default=None,
+        description="W&B run URL (populated after wandb.init())."
     )
 
     class Config:
