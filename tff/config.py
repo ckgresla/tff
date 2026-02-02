@@ -1,183 +1,224 @@
-"""Configuration objects for models and training using Pydantic."""
+"""Configuration objects for models and training using Hydra structured configs."""
 
-import os
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Literal, Union
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field, Discriminator
-from typing_extensions import Annotated
+from hydra_zen import store
+from omegaconf import MISSING, OmegaConf
 
 
-class ModelConfig(BaseModel):
+@dataclass
+class ModelConfig:
     """Configuration for GPT model architecture."""
 
-    vocab_size: int = Field(default=256, description="Vocabulary size (256 for byte-level)")
-    d_model: int = Field(default=512, description="Model embedding dimension")
-    num_layers: int = Field(default=8, description="Number of transformer layers")
-    num_heads: int = Field(default=8, description="Number of attention heads")
-    d_ff: int = Field(default=2048, description="Feed-forward network dimension")
-    max_seq_len: int = Field(default=512, description="Maximum sequence length")
-    dropout_rate: float = Field(default=0.1, ge=0.0, le=1.0, description="Dropout probability")
-
-    class Config:
-        frozen = True  # Make config immutable
+    vocab_size: int = 256
+    d_model: int = 512
+    num_layers: int = 8
+    num_heads: int = 8
+    d_ff: int = 2048
+    max_seq_len: int = 512
+    dropout_rate: float = 0.1
 
 
-class DataConfig(BaseModel):
+@dataclass
+class DataConfig:
     """Configuration for data loading."""
 
-    data_path: str = Field(default="/raid/datasets/enwiki8.zip", description="Path to enwiki8.zip")
-    seq_len: int = Field(default=256, description="Sequence length for training")
-    batch_size: int = Field(default=32, description="Training batch size")
-
-    class Config:
-        frozen = True
+    data_path: str = "/raid/datasets/enwiki8.zip"
+    seq_len: int = 256
+    batch_size: int = 32
 
 
-# Optimizer configurations (discriminated union)
-class AdamWConfig(BaseModel):
+@dataclass
+class OptimizerConfig:
+    """Base optimizer configuration. Subclassed by each optimizer variant."""
+
+    name: str = "adamw"
+    learning_rate: float = 3e-4
+
+
+@dataclass
+class AdamWConfig(OptimizerConfig):
     """Configuration for AdamW optimizer."""
 
-    name: Literal["adamw"] = "adamw"
-    learning_rate: float = Field(default=3e-4, gt=0.0, description="Learning rate")
-    beta1: float = Field(default=0.9, ge=0.0, le=1.0, description="Adam beta1 (first moment decay)")
-    beta2: float = Field(default=0.999, ge=0.0, le=1.0, description="Adam beta2 (second moment decay)")
-    eps: float = Field(default=1e-8, gt=0.0, description="Epsilon for numerical stability")
-    weight_decay: float = Field(default=0.01, ge=0.0, description="Weight decay coefficient")
-
-    class Config:
-        frozen = True
+    name: str = "adamw"
+    learning_rate: float = 3e-4
+    beta1: float = 0.9
+    beta2: float = 0.999
+    eps: float = 1e-8
+    weight_decay: float = 0.01
 
 
-class AdamConfig(BaseModel):
+@dataclass
+class AdamConfig(OptimizerConfig):
     """Configuration for Adam optimizer."""
 
-    name: Literal["adam"] = "adam"
-    learning_rate: float = Field(default=3e-4, gt=0.0, description="Learning rate")
-    beta1: float = Field(default=0.9, ge=0.0, le=1.0, description="Adam beta1 (first moment decay)")
-    beta2: float = Field(default=0.999, ge=0.0, le=1.0, description="Adam beta2 (second moment decay)")
-    eps: float = Field(default=1e-8, gt=0.0, description="Epsilon for numerical stability")
-
-    class Config:
-        frozen = True
+    name: str = "adam"
+    learning_rate: float = 3e-4
+    beta1: float = 0.9
+    beta2: float = 0.999
+    eps: float = 1e-8
 
 
-class SGDConfig(BaseModel):
+@dataclass
+class SGDConfig(OptimizerConfig):
     """Configuration for SGD optimizer with optional momentum."""
 
-    name: Literal["sgd"] = "sgd"
-    learning_rate: float = Field(default=1e-2, gt=0.0, description="Learning rate")
-    momentum: float = Field(default=0.0, ge=0.0, le=1.0, description="Momentum coefficient (0 for no momentum)")
-    nesterov: bool = Field(default=False, description="Use Nesterov momentum")
-
-    class Config:
-        frozen = True
+    name: str = "sgd"
+    learning_rate: float = 1e-2
+    momentum: float = 0.0
+    nesterov: bool = False
 
 
-# Union of all optimizer configs with discriminator on 'name' field
-OptimizerConfig = Annotated[
-    Union[AdamWConfig, AdamConfig, SGDConfig],
-    Discriminator('name')
-]
+_OPTIMIZER_REGISTRY: dict[str, type[OptimizerConfig]] = {
+    "adamw": AdamWConfig,
+    "adam": AdamConfig,
+    "sgd": SGDConfig,
+}
 
 
-class TrainingConfig(BaseModel):
+@dataclass
+class TrainingConfig:
     """Configuration for training hyperparameters."""
 
-    optimizer: OptimizerConfig = Field(default_factory=AdamWConfig, description="Optimizer configuration")
-    num_steps: int = Field(default=10000, gt=0, description="Total training steps")
-    eval_every: int = Field(default=500, gt=0, description="Evaluate every N steps")
-    eval_on_start: bool = Field(default=True, description="Evaluate model before training starts")
-    log_every: int = Field(default=100, gt=0, description="Log every N steps")
-    seed: int = Field(default=42, description="Random seed for reproducibility")
+    num_steps: int = 10000
+    eval_every: int = 500
+    eval_on_start: bool = True
+    log_every: int = 100
+    seed: int = 42
 
     # Checkpointing
-    checkpoint_dir: Optional[str] = Field(default=None, description="Directory to save checkpoints")
-    save_every: int = Field(default=1000, gt=0, description="Save checkpoint every N steps")
+    checkpoint_dir: Optional[str] = None
+    save_every: int = 1000
 
     # Parallelism
-    data_parallel: bool = Field(
-        default=False,
-        description="Enable data parallelism across all visible devices. "
-        "Batch will be split evenly across devices. "
-        "Use CUDA_VISIBLE_DEVICES to control which GPUs are used."
-    )
+    data_parallel: bool = False
 
-    # Weights & Biases logging (read from environment variables)
-    wandb_project: Optional[str] = Field(
-        default_factory=lambda: os.environ.get("WANDB_PROJECT"),
-        description="W&B project name from WANDB_PROJECT env var. If None, wandb logging is disabled."
-    )
-    wandb_entity: Optional[str] = Field(
-        default_factory=lambda: os.environ.get("WANDB_ENTITY"),
-        description="W&B team/entity name from WANDB_ENTITY env var."
-    )
-    wandb_name: Optional[str] = Field(
-        default_factory=lambda: os.environ.get("WANDB_NAME"),
-        description="W&B run name from WANDB_NAME env var. If None, wandb generates a name."
-    )
-    wandb_tags: Optional[list[str]] = Field(
-        default_factory=lambda: (
-            os.environ.get("WANDB_TAGS").split(",")
-            if os.environ.get("WANDB_TAGS")
-            else None
-        ),
-        description="W&B tags from WANDB_TAGS env var (comma-separated, e.g., 'train,model-v2')."
-    )
-    wandb_run_url: Optional[str] = Field(
-        default=None,
-        description="W&B run URL (populated after wandb.init())."
-    )
-
-    class Config:
-        frozen = True
+    # Weights & Biases logging (populated from env via OmegaConf oc.env resolver)
+    wandb_project: Optional[str] = None
+    wandb_entity: Optional[str] = None
+    wandb_name: Optional[str] = None
+    wandb_tags: Optional[str] = None
+    wandb_run_url: Optional[str] = None
 
 
-class ExperimentConfig(BaseModel):
-    """
-    Complete experiment configuration combining all config objects.
+@dataclass
+class ExperimentConfig:
+    """Complete experiment configuration combining all config objects."""
 
-    # init with defaults
-    `config = ExperimentConfig()`
-    """
+    model: ModelConfig = field(default_factory=ModelConfig)
+    data: DataConfig = field(default_factory=DataConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    optimizer: OptimizerConfig = field(default_factory=AdamWConfig)
 
-    model: ModelConfig = Field(default_factory=ModelConfig)
-    data: DataConfig = Field(default_factory=DataConfig)
-    training: TrainingConfig = Field(default_factory=TrainingConfig)
+    @classmethod
+    def from_dictconfig(cls, cfg: "DictConfig") -> "ExperimentConfig":
+        """Construct typed ExperimentConfig from a Hydra DictConfig.
 
-    class Config:
-        frozen = True
+        Resolves interpolations, picks the correct optimizer dataclass
+        based on the 'name' field, and returns a fully typed instance.
+        """
+        import dataclasses as _dc
+
+        d = OmegaConf.to_container(cfg, resolve=True)
+
+        def _pick(dc_cls: type, section: dict) -> dict:
+            """Keep only keys that are actual dataclass fields."""
+            valid = {f.name for f in _dc.fields(dc_cls)}
+            return {k: v for k, v in section.items() if k in valid}
+
+        opt_dict = d["optimizer"]
+        opt_cls = _OPTIMIZER_REGISTRY[opt_dict["name"]]
+
+        return cls(
+            model=ModelConfig(**_pick(ModelConfig, d["model"])),
+            data=DataConfig(**_pick(DataConfig, d["data"])),
+            training=TrainingConfig(**_pick(TrainingConfig, d["training"])),
+            optimizer=opt_cls(**_pick(opt_cls, opt_dict)),
+        )
 
     def save_json(self, path: Path | str) -> None:
-        """Save configuration to JSON file.
-
-        Args:
-            path: Path to save the JSON file
-        """
+        """Save configuration to JSON file."""
         path = Path(path)
-        with open(path, 'w') as f:
-            json.dump(self.model_dump(), f, indent=2)
+        container = OmegaConf.to_container(
+            OmegaConf.structured(self), resolve=True
+        )
+        with open(path, "w") as f:
+            json.dump(container, f, indent=2)
 
     @classmethod
     def load_json(cls, path: Path | str) -> "ExperimentConfig":
-        """Load configuration from JSON file.
-
-        Args:
-            path: Path to the JSON file
-
-        Returns:
-            ExperimentConfig instance
-        """
+        """Load configuration from JSON file."""
         path = Path(path)
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             config_dict = json.load(f)
-        return cls(**config_dict)
+        cfg = OmegaConf.structured(cls(**config_dict))
+        return OmegaConf.to_object(cfg)
 
     def summary(self) -> str:
-        """Generate a human-readable summary of the configuration.
+        """Generate a human-readable summary of the configuration."""
+        container = OmegaConf.to_container(
+            OmegaConf.structured(self), resolve=True
+        )
+        return json.dumps(container, indent=2)
 
-        Returns:
-            Multi-line string describing the configuration
-        """
-        return json.dumps(self.model_dump(), indent=2)
+
+@dataclass
+class _HydraExperimentConfig:
+    """Hydra entry-point config with untyped group fields.
+
+    Fields use ``Any = MISSING`` so hydra-zen's ``builds()`` wrapper and
+    Hydra's defaults-list composition can populate them without type conflicts.
+    The typed ``ExperimentConfig`` is reconstructed via ``from_dictconfig()``.
+    """
+
+    model: Any = MISSING
+    data: Any = MISSING
+    training: Any = MISSING
+    optimizer: Any = MISSING
+
+
+def _register_configs() -> None:
+    """Register all structured configs with Hydra via hydra-zen store.
+
+    All config groups (model, data, training, optimizer) and the top-level
+    config are registered here — no YAML files needed.
+    """
+    # Model variants
+    store(ModelConfig, group="model", name="default")
+    store(ModelConfig, group="model", name="toy",
+          d_model=128, num_layers=4, num_heads=4, d_ff=512, max_seq_len=256)
+
+    # Data
+    store(DataConfig, group="data", name="enwik8")
+
+    # Training variants (env vars via OmegaConf resolver)
+    _wandb_env = dict(
+        wandb_project="${oc.env:WANDB_PROJECT,null}",
+        wandb_entity="${oc.env:WANDB_ENTITY,null}",
+        wandb_name="${oc.env:WANDB_NAME,null}",
+        wandb_tags="${oc.env:WANDB_TAGS,null}",
+    )
+    store(TrainingConfig, group="training", name="default", **_wandb_env)
+    store(TrainingConfig, group="training", name="toy",
+          eval_every=1000, checkpoint_dir="checkpoints/toy", **_wandb_env)
+
+    # Optimizers
+    store(AdamWConfig, group="optimizer", name="adamw")
+    store(AdamConfig, group="optimizer", name="adam")
+    store(SGDConfig, group="optimizer", name="sgd")
+
+    # Top-level config with defaults
+    store(_HydraExperimentConfig, name="config",
+          hydra_defaults=["_self_",
+                          {"model": "default"},
+                          {"data": "enwik8"},
+                          {"training": "default"},
+                          {"optimizer": "adamw"}])
+
+    store.add_to_hydra_store()
+
+
+_register_configs()

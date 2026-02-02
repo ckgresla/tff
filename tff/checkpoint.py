@@ -1,5 +1,6 @@
 """Checkpoint saving and loading utilities for JAX/Equinox models."""
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -9,6 +10,8 @@ from jaxtyping import PRNGKeyArray
 
 from tff.modeling import GPT
 from tff.config import ExperimentConfig
+
+log = logging.getLogger(__name__)
 
 
 def save_checkpoint(
@@ -40,7 +43,7 @@ def save_checkpoint(
     config_path = checkpoint_dir / f"{name}-config.json"
     config.save_json(config_path)
 
-    print(f"Saved checkpoint to {checkpoint_dir}/{name}.*")
+    log.info("Saved checkpoint to '%s/%s.*'", checkpoint_dir, name)
 
 
 def load_checkpoint(
@@ -91,7 +94,7 @@ def load_checkpoint(
         raise FileNotFoundError(f"Model file not found: {model_path}")
     model = eqx.tree_deserialise_leaves(model_path, model)
 
-    print(f"Loaded checkpoint from {checkpoint_dir}/{name}.*")
+    log.info("Loaded checkpoint from '%s/%s.*'", checkpoint_dir, name)
     return model, config
 
 
@@ -122,26 +125,12 @@ def list_checkpoints(checkpoint_dir: Path) -> list[str]:
 
 # Example usage functions
 def load_best_checkpoint(checkpoint_dir: Path) -> tuple[GPT, ExperimentConfig]:
-    """Load the best model checkpoint.
-
-    Args:
-        checkpoint_dir: Directory containing checkpoints
-
-    Returns:
-        Tuple of (model, config)
-    """
+    """Load the best model checkpoint."""
     return load_checkpoint(checkpoint_dir, "best-model")
 
 
 def load_final_checkpoint(checkpoint_dir: Path) -> tuple[GPT, ExperimentConfig]:
-    """Load the final model checkpoint.
-
-    Args:
-        checkpoint_dir: Directory containing checkpoints
-
-    Returns:
-        Tuple of (model, config)
-    """
+    """Load the final model checkpoint."""
     return load_checkpoint(checkpoint_dir, "final-model")
 
 
@@ -149,14 +138,6 @@ def load_step_checkpoint(
     checkpoint_dir: Path,
     step: int,
 ) -> tuple[GPT, ExperimentConfig]:
-    """Load checkpoint from a specific training step.
-
-    Args:
-        checkpoint_dir: Directory containing checkpoints
-        step: Training step number
-
-    Returns:
-        Tuple of (model, config)
-    """
+    """Load checkpoint from a specific training step."""
     name = f"checkpoint-{step:06d}"
     return load_checkpoint(checkpoint_dir, name)

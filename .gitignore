@@ -72,6 +72,9 @@ profiler/
 *.log
 
 # things you probably don't want to track
+uv.lock
 wandb/
 results/
 output/
+outputs/
+checkpoints/

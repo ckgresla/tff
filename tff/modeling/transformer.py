@@ -58,7 +58,7 @@ class CausalSelfAttention(eqx.Module):
         self,
         x: Float[Array, "seq d_model"],
         *,
-        key: Optional[PRNGKeyArray] = None,
+        dropout_key: Optional[PRNGKeyArray] = None,
     ) -> Float[Array, "seq d_model"]:
         T, C = x.shape
 
@@ -71,6 +71,17 @@ class CausalSelfAttention(eqx.Module):
         q = q.reshape(T, self.num_heads, self.head_dim).swapaxes(0, 1)  # (nh, T, hs)
         v = v.reshape(T, self.num_heads, self.head_dim).swapaxes(0, 1)  # (nh, T, hs)
 
+        # TODO: use `jax.nn.dot_product_attention`, which gets you flash
+        # attention in jax (if set `implementation="cudnn"` in fn kwargs)
+        # see- https://docs.jax.dev/en/latest/_autosummary/jax.nn.dot_product_attention.html
+        # jax.nn.dot_product_attention(
+        #     query=q,
+        #     key=k,
+        #     value=v,
+        #     is_causal=True,
+        # )
+        # though ^this impl doesn't support attention dropout, if need speed
+        # or better memory then impl this later (and train w/o attn dropout)
         # Scaled dot-product attention
         scores = jnp.matmul(q, k.swapaxes(-2, -1)) / math.sqrt(self.head_dim)
 
@@ -80,11 +91,11 @@ class CausalSelfAttention(eqx.Module):
         attn_weights = jax.nn.softmax(scores, axis=-1)
 
         # Apply dropout to attention weights
-        if key is not None:
-            key1, key2 = jr.split(key)
+        if dropout_key is not None:
+            key1, key2 = jr.split(dropout_key)
             attn_weights = self.attn_dropout(attn_weights, key=key1)
         else:
-            key2 = None
+            key1, key2 = None, None
 
         # Apply attention to values
         y = jnp.matmul(attn_weights, v)  # (nh, T, hs)
@@ -129,14 +140,14 @@ class MLP(eqx.Module):
         self,
         x: Float[Array, "seq d_model"],
         *,
-        key: Optional[PRNGKeyArray] = None,
+        dropout_key: Optional[PRNGKeyArray] = None,
     ) -> Float[Array, "seq d_model"]:
         # Vectorized over sequence dimension
         x = jax.vmap(self.c_fc)(x)
         x = jax.nn.gelu(x, approximate=True)  # Use approximate GELU like nanoGPT
 
-        if key is not None:
-            key1, key2 = jr.split(key)
+        if dropout_key is not None:
+            key1, key2 = jr.split(dropout_key)
             x = self.dropout(x, key=key1)
         else:
             key2 = None
@@ -181,17 +192,17 @@ class Block(eqx.Module):
         self,
         x: Float[Array, "seq d_model"],
         *,
-        key: Optional[PRNGKeyArray] = None,
+        dropout_key: Optional[PRNGKeyArray] = None,
     ) -> Float[Array, "seq d_model"]:
         # Prepare keys
-        if key is not None:
-            key1, key2 = jr.split(key)
+        if dropout_key is not None:
+            key1, key2 = jr.split(dropout_key)
         else:
             key1 = key2 = None
 
         # Pre-norm architecture
-        x = x + self.attn(jax.vmap(self.ln_1)(x), key=key1)
-        x = x + self.mlp(jax.vmap(self.ln_2)(x), key=key2)
+        x = x + self.attn(jax.vmap(self.ln_1)(x), dropout_key=key1)
+        x = x + self.mlp(jax.vmap(self.ln_2)(x), dropout_key=key2)
 
         return x
 
@@ -275,14 +286,14 @@ class GPT(eqx.Module):
         self,
         idx: Int[Array, "seq"],
         *,
-        key: Optional[PRNGKeyArray] = None,
+        dropout_key: PRNGKeyArray | None = None,
     ) -> Float[Array, "seq vocab"]:
         """
         Forward pass for a single sequence.
 
         Args:
             idx: Input token IDs [seq] (single sequence, no batch dim)
-            key: PRNG key for dropout
+            key: PRNG key, when provided enables dropout
 
         Returns:
             logits: Output logits [seq, vocab]
@@ -297,16 +308,16 @@ class GPT(eqx.Module):
         pos_emb = jax.vmap(self.wpe)(pos)  # (T, C)
         x = tok_emb + pos_emb
 
-        # Dropout
-        if key is not None:
-            drop_key, *block_keys = jr.split(key, self.num_layers + 1)
+        # Dropout -- if key provided, else "inference" mode
+        if dropout_key is not None:
+            drop_key, *block_keys = jr.split(dropout_key, self.num_layers + 1)
             x = self.drop(x, key=drop_key)
         else:
             block_keys = [None] * self.num_layers
 
         # Apply transformer blocks
         for block, block_key in zip(self.blocks, block_keys):
-            x = block(x, key=block_key)
+            x = block(x, dropout_key=block_key)
 
         # Final layer norm
         x = jax.vmap(self.ln_f)(x)

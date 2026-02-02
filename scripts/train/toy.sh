@@ -18,8 +18,8 @@ echo "GPU: $CUDA_VISIBLE_DEVICES"
 echo "JAX Platform: $JAX_PLATFORMS"
 echo ""
 
-# Run training with small config
-python -m tff.train_toy
+# Run training with toy config
+python -m tff.train model=toy training=toy
 
 echo ""
 echo "Training complete!"

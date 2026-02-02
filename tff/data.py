@@ -1,5 +1,6 @@
 """Data loading for byte-level language modeling."""
 
+import logging
 import zipfile
 import numpy as np
 import jax.numpy as jnp
@@ -8,6 +9,8 @@ from jaxtyping import PRNGKeyArray
 from typing import Iterator
 from pathlib import Path
 import urllib.request
+
+log = logging.getLogger("tff.data")
 
 
 class Enwik8Dataset:
@@ -79,7 +82,7 @@ class Enwik8Dataset:
         else:
             raise ValueError(f"Unknown split: {split}")
 
-        print(f"Loaded {split} split: {len(self.data):,} bytes")
+        log.info("Data: %s split | %s bytes", split, f"{len(self.data):,}")
 
     def get_batch(self, batch_size: int, key: PRNGKeyArray) -> tuple[jnp.ndarray, jnp.ndarray]:
         """

@@ -24,10 +24,10 @@ echo "JAX Platform: $JAX_PLATFORMS"
 echo "============================================"
 echo ""
 
-# Run training with data_parallel enabled.
+# Run training with toy config + data parallel
 export WANDB_PROJECT="tff-development"
-export WANDB_NAME="wilburwright-v5"
-python -m tff.train_toy --data_parallel=True
+export WANDB_NAME="wilburwright-v8"
+python -m tff.train model=toy training=toy training.data_parallel=true optimizer=sgd optimizer.nesterov=True optimizer.momentum=0.4
 
 echo ""
 echo "============================================"
