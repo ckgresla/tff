@@ -1,0 +1,142 @@
+#+TITLE: Transformer-Former Research Notes
+#+AUTHOR: ckg + claude
+
+* ChoosyTransformer
+Core idea: a pool of N transformer layers, where a router dynamically selects which layer to apply at each of K computational steps. Unlike a standard transformer (fixed order) or a looped transformer (same layer repeated), the model learns to compose different layers for different inputs.
+
+** Architecture
+- Pool of N distinct transformer blocks (each with unique weights)
+- Router MLP: mean-pools hidden state → logits over N layers
+- K routing steps per forward pass (N and K are independent hyperparameters)
+- At each step: router picks a layer, that layer is applied
+- Training: categorical sampling from router logits (exploration)
+- Inference: argmax routing (exploitation)
+
+** Adaptive Computation (future work)
+The model should learn /how many/ steps to take, not just which layer at each step.
+
+*** Per-batch halting probability
+- Core idea: use per-token loss as a signal for computational difficulty
+- Tokens with high loss (model is uncertain) → allocate more routing steps
+- Tokens with low loss (model already understands) → fewer steps (as low as 1)
+- This creates a natural curriculum: easy tokens get fast-tracked, hard tokens get more compute
+- Implementation sketch:
+  1. Router outputs both "which layer" and "should I halt" at each step
+  2. Halting probability trained to correlate with loss reduction per step
+  3. If adding another step doesn't reduce loss much → halt
+
+*** Max computational steps (critical)
+- MUST enforce a maximum number of steps to avoid the halting problem
+- Without a cap, the model could learn to loop forever on hard tokens
+- A hard cap (e.g., K_max = 2 * num_pool_layers) is the simplest approach
+- But a SOFT cap is more elegant and learnable:
+  - Add a "ponder cost" to the loss: lambda * mean(num_steps_taken)
+  - This is analogous to a repetition penalty in LLM decoding
+  - The model learns to balance "more compute = lower CE loss" against "more compute = higher ponder cost"
+  - With the right lambda, the model naturally converges to using just enough steps
+  - See: Graves (2016) "Adaptive Computation Time" (ACT) for the original formulation
+  - The ACT halting mechanism uses:
+    - Per-position halting probability p_t = sigmoid(W * h_t + b)
+    - Cumulative probability sum tracked per position
+    - Position halts when cumulative prob exceeds 1 - epsilon
+    - Remainder probability used to weight final state
+    - Ponder cost = act_loss_weight * mean(num_updates + remainders)
+  - Bias initialization matters: bias_init=1.0 encourages continuing (not halting too early)
+
+*** Soft max steps vs hard max steps
+- Hard max: simple, guarantees bounded compute, but model can't learn the bound
+- Soft max (ponder cost): model learns optimal compute allocation, but needs tuning of lambda
+  - Too high lambda → model always halts after 1 step (degenerate)
+  - Too low lambda → model uses max steps always (no adaptivity)
+  - Sweet spot: model uses varying steps depending on input difficulty
+- Recommended approach: use BOTH
+  - Hard max as a safety net (K_max)
+  - Ponder cost for the model to learn within that budget
+  - Start with hard max only (simpler), add ponder cost as refinement
+
+** Router Loss Terms
+*** Load balancing (KL to uniform)
+- Without this, routers /may/ collapse to using 1-2 layers and ignoring the rest
+- Loss: KL(empirical_layer_usage || uniform) or simpler MSE variant
+- Weight: start with 0.01, ablate to see if collapse happens without it
+- IMPORTANT: we want to ablate this explicitly to see if layer collapse occurs
+  - Run with and without balancing loss
+  - Measure layer utilization entropy (should be high with balancing, may be low without)
+  - If the model naturally uses all layers without the loss, that's interesting!
+
+** TODO ablate router training strategies
+- Current: Gumbel-softmax with straight-through estimator (hard forward, soft backward)
+- Alternative approaches to compare:
+  1. Gated routing (Switch Transformer style): scale output by router probability
+     - Concern: dilution when router is uncertain (early training, gate ≈ 1/N)
+  2. Soft routing: apply ALL layers, softmax-weighted combination during training
+     - Full gradients, but N× compute per routing step
+     - Hard routing at inference only
+  3. REINFORCE / policy gradient: treat routing as an RL problem
+     - Router is the policy, loss reduction is the reward
+     - High variance, needs baselines
+  4. No gradient to router at all: router trained only via aux load-balancing loss
+     - Simplest, but router can't learn content-dependent specialization from main loss
+- Q: does the choice of router training strategy affect layer specialization patterns?
+
+** Key experimental questions
+1. Does the router learn to specialize layers for different content types?
+2. Can fewer routing steps + specialized layers match more steps with generic layers? (or same number of compute steps, routed, beat out a fixed transformer?)
+3. Does the router use different layers for different data distributions (e.g., prose vs XML in enwik8)?
+4. Does removing the load-balancing loss cause layer collapse?
+
+* Experiment 1: enwik8 three-way comparison
+** Models (compute-matched)
+- Baseline GPT: 8 distinct layers, each applied once
+- Looped Transformer: 1 shared layer, looped 8 times (+ timestep embeddings)
+- ChoosyTransformer: 8 layers in pool, 8 routing steps
+
+** Metrics
+*** All models
+- BPC on test set (overall)
+- BPC stratified by content type (XML tags, prose, numbers, whitespace, entities)
+- Gradient/parameter norms per layer
+- Layer contribution: per-layer residual delta norm (how much each block changes the hidden state)
+  - In the baseline, layers specialize /passively/ by their position in the stack
+  - In the choosy model, layers specialize /actively/ by content
+  - Comparing these two tells us whether routing adds meaningful specialization
+    beyond what positional ordering already provides
+  - For the looped transformer, this shows whether the shared block does
+    qualitatively different work at different iterations (via the timestep embedding)
+
+*** ChoosyTransformer-specific
+- Layer utilization heatmap (content_type × layer_id): which layers fire for which content
+- Routing entropy: is the router confident or uncertain in its selections?
+
+** Content type analysis
+enwik8 is Wikipedia XML, naturally containing distinct byte-level content types:
+- XML markup: <tag>, </tag>, attributes
+- Prose: English text (article bodies)
+- Numbers: digits, dates, statistics
+- Whitespace: structural formatting
+- Markup entities: &amp;, &lt;, &#NNN;
+
+Hypothesis: the ChoosyTransformer should route different content types to different layers.
+If it does, we have evidence of learned specialization.
+
+* Related work
+** Universal Transformers (Dehghani et al., 2018)
+- https://arxiv.org/abs/1807.03819
+- Original looped transformer: single block, shared weights, applied T times
+- Adds sinusoidal timestep embeddings so model knows which iteration
+- Optional ACT (Adaptive Computation Time) for per-position halting
+- Key result: Turing-complete with input-dependent depth
+
+** Looped Transformers as Programmable Computers (Giannou et al., 2023)
+- https://arxiv.org/abs/2301.13196
+- Theoretical: 13-layer looped TF can simulate a general-purpose computer
+
+** LoopFormer (Jeddi et al., 2026)
+- https://arxiv.org/abs/2602.11451
+- Shortcut-consistency training for elastic depth
+- Different from our work: same shared weights repeated, no routing/choice
+
+** Mixture-of-Depths (Raposo et al., 2024)
+- https://arxiv.org/abs/2404.02258
+- Per-token routing to skip layers (top-k routing)
+- Different axis: their tokens skip layers, our model chooses layers

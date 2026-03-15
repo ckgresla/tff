@@ -25,9 +25,9 @@ echo "============================================"
 echo ""
 
 # Run training with toy config + data parallel
-export WANDB_PROJECT="tff-development"
+export WANDB_PROJECT="choosy-development"
 export WANDB_NAME="wilburwright-v8"
-python -m tff.train model=toy training=toy training.data_parallel=true optimizer=sgd optimizer.nesterov=True optimizer.momentum=0.4
+python -m choosy.train model=toy training=toy training.data_parallel=true optimizer=sgd optimizer.nesterov=True optimizer.momentum=0.4
 
 echo ""
 echo "============================================"

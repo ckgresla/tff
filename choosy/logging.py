@@ -18,9 +18,9 @@ def setup_logging(
         level: Logging level (default: INFO).
 
     Returns:
-        Configured root logger for the tff package.
+        Configured root logger for the choosy package.
     """
-    logger = logging.getLogger("tff")
+    logger = logging.getLogger("choosy")
     logger.setLevel(level)
     logger.propagate = False  # Don't duplicate into Hydra's root logger
 

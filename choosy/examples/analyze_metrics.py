@@ -4,7 +4,7 @@ This script demonstrates how to load and analyze metrics from a training run.
 """
 
 from pathlib import Path
-from tff.metrics import load_metrics, load_training_info, print_training_summary
+from choosy.metrics import load_metrics, load_training_info, print_training_summary
 
 
 def analyze_training_run(checkpoint_dir: str = "checkpoints") -> None:

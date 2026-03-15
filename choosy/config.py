@@ -11,7 +11,9 @@ from omegaconf import MISSING, OmegaConf
 
 @dataclass
 class ModelConfig:
-    """Configuration for GPT model architecture."""
+    """Configuration for model architecture."""
+
+    model_type: str = "regular"  # "regular", "looped", "choosy"
 
     vocab_size: int = 256
     d_model: int = 512
@@ -20,6 +22,16 @@ class ModelConfig:
     d_ff: int = 2048
     max_seq_len: int = 512
     dropout_rate: float = 0.1
+
+    # Looped transformer
+    num_loops: int = 8
+
+    # Choosy transformer
+    num_pool_layers: int = 8
+    num_routing_steps: int = 8
+    router_hidden_size: int = 256
+    router_temperature: float = 1.0
+    routing_loss_weight: float = 0.01
 
 
 @dataclass
@@ -186,10 +198,29 @@ def _register_configs() -> None:
     All config groups (model, data, training, optimizer) and the top-level
     config are registered here — no YAML files needed.
     """
-    # Model variants
+    # Model variants — "default" kept for backward compat
     store(ModelConfig, group="model", name="default")
     store(ModelConfig, group="model", name="toy",
           d_model=128, num_layers=4, num_heads=4, d_ff=512, max_seq_len=256)
+
+    # Regular (baseline) transformer
+    store(ModelConfig, group="model", name="regular",
+          model_type="regular")
+    store(ModelConfig, group="model", name="regular-toy",
+          model_type="regular", d_model=128, num_layers=4, num_heads=4, d_ff=512, max_seq_len=256)
+
+    # Looped transformer (1 shared block, T loops)
+    store(ModelConfig, group="model", name="looped",
+          model_type="looped", num_loops=8)
+    store(ModelConfig, group="model", name="looped-toy",
+          model_type="looped", d_model=128, num_heads=4, d_ff=512, max_seq_len=256, num_loops=4)
+
+    # Choosy transformer (N pool layers, K routing steps)
+    store(ModelConfig, group="model", name="choosy",
+          model_type="choosy", num_pool_layers=8, num_routing_steps=8)
+    store(ModelConfig, group="model", name="choosy-toy",
+          model_type="choosy", d_model=128, num_heads=4, d_ff=512, max_seq_len=256,
+          num_pool_layers=4, num_routing_steps=4)
 
     # Data
     store(DataConfig, group="data", name="enwik8")
@@ -204,6 +235,9 @@ def _register_configs() -> None:
     store(TrainingConfig, group="training", name="default", **_wandb_env)
     store(TrainingConfig, group="training", name="toy",
           eval_every=1000, checkpoint_dir="checkpoints/toy", **_wandb_env)
+    store(TrainingConfig, group="training", name="smoke",
+          num_steps=20, eval_every=10, eval_on_start=False, log_every=5,
+          save_every=9999, **_wandb_env)
 
     # Optimizers
     store(AdamWConfig, group="optimizer", name="adamw")

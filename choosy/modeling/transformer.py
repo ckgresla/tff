@@ -1,4 +1,4 @@
-"""Baseline GPT-style Transformer implementation with JAX + Equinox.
+"""Regular (baseline) Transformer implementation with JAX + Equinox.
 
 A clean, nanoGPT-inspired implementation following JAX best practices.
 Model processes single sequences; batching happens via vmap at training level.
@@ -207,9 +207,10 @@ class Block(eqx.Module):
         return x
 
 
-class GPT(eqx.Module):
-    """GPT-style transformer for byte-level language modeling.
+class RegularTransformer(eqx.Module):
+    """Standard sequential transformer for byte-level language modeling.
 
+    N distinct transformer blocks applied in fixed order, once each.
     Processes single sequences (T,) → (T, vocab_size).
     Batching happens via vmap at training loop level.
     """
@@ -240,7 +241,7 @@ class GPT(eqx.Module):
         key: PRNGKeyArray,
     ):
         """
-        Initialize GPT model.
+        Initialize model.
 
         Args:
             vocab_size: Size of vocabulary (256 for byte-level)
@@ -332,7 +333,7 @@ class GPT(eqx.Module):
         params = eqx.filter(self, eqx.is_inexact_array)
         return sum(p.size for p in jax.tree_util.tree_leaves(params))
 
-    def compute_metrics(self, grads: "GPT") -> dict[str, float]:
+    def compute_metrics(self, grads: "RegularTransformer") -> dict[str, float]:
         """Compute comprehensive training metrics.
 
         Args:

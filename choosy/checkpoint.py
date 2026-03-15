@@ -8,14 +8,14 @@ import jax.random as jr
 import equinox as eqx
 from jaxtyping import PRNGKeyArray
 
-from tff.modeling import GPT
-from tff.config import ExperimentConfig
+from choosy.modeling import RegularTransformer
+from choosy.config import ExperimentConfig
 
 log = logging.getLogger(__name__)
 
 
 def save_checkpoint(
-    model: GPT,
+    model,
     config: ExperimentConfig,
     checkpoint_dir: Path,
     name: str = "checkpoint",
@@ -27,7 +27,7 @@ def save_checkpoint(
     - {name}_config.json: Experiment configuration
 
     Args:
-        model: GPT model to save
+        model: Model to save
         config: Experiment configuration
         checkpoint_dir: Directory to save checkpoint
         name: Name prefix for checkpoint files (e.g., "best", "checkpoint_001000")
@@ -50,7 +50,7 @@ def load_checkpoint(
     checkpoint_dir: Path,
     name: str = "checkpoint",
     key: Optional[PRNGKeyArray] = None,
-) -> tuple[GPT, ExperimentConfig]:
+) -> tuple[eqx.Module, ExperimentConfig]:
     """Load model checkpoint with configuration.
 
     Args:
@@ -77,7 +77,7 @@ def load_checkpoint(
     if key is None:
         key = jr.PRNGKey(config.training.seed)
 
-    model = GPT(
+    model = RegularTransformer(
         vocab_size=config.model.vocab_size,
         d_model=config.model.d_model,
         num_layers=config.model.num_layers,
@@ -124,12 +124,12 @@ def list_checkpoints(checkpoint_dir: Path) -> list[str]:
 
 
 # Example usage functions
-def load_best_checkpoint(checkpoint_dir: Path) -> tuple[GPT, ExperimentConfig]:
+def load_best_checkpoint(checkpoint_dir: Path) -> tuple[eqx.Module, ExperimentConfig]:
     """Load the best model checkpoint."""
     return load_checkpoint(checkpoint_dir, "best-model")
 
 
-def load_final_checkpoint(checkpoint_dir: Path) -> tuple[GPT, ExperimentConfig]:
+def load_final_checkpoint(checkpoint_dir: Path) -> tuple[eqx.Module, ExperimentConfig]:
     """Load the final model checkpoint."""
     return load_checkpoint(checkpoint_dir, "final-model")
 
@@ -137,7 +137,7 @@ def load_final_checkpoint(checkpoint_dir: Path) -> tuple[GPT, ExperimentConfig]:
 def load_step_checkpoint(
     checkpoint_dir: Path,
     step: int,
-) -> tuple[GPT, ExperimentConfig]:
+) -> tuple[eqx.Module, ExperimentConfig]:
     """Load checkpoint from a specific training step."""
     name = f"checkpoint-{step:06d}"
     return load_checkpoint(checkpoint_dir, name)

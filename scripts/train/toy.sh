@@ -19,7 +19,7 @@ echo "JAX Platform: $JAX_PLATFORMS"
 echo ""
 
 # Run training with toy config
-python -m tff.train model=toy training=toy
+python -m choosy.train model=toy training=toy
 
 echo ""
 echo "Training complete!"

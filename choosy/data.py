@@ -10,7 +10,7 @@ from typing import Iterator
 from pathlib import Path
 import urllib.request
 
-log = logging.getLogger("tff.data")
+log = logging.getLogger("choosy.data")
 
 
 class Enwik8Dataset:

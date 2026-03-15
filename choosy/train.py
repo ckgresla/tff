@@ -1,6 +1,6 @@
 """Clean training script for byte-level language modeling on enwik8.
 
-A baseline training loop using JAX + Equinox with a simple GPT-style transformer.
+Training loop for byte-level language modeling on enwik8.
 Supports data parallelism across multiple GPUs.
 """
 
@@ -21,22 +21,22 @@ import optax
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from omegaconf import DictConfig, OmegaConf
 
-from tff.data import Enwik8Dataset
-from tff.modeling import GPT
-from tff.config import (
+from choosy.data import Enwik8Dataset
+from choosy.modeling import RegularTransformer, LoopedTransformer, ChoosyTransformer
+from choosy.config import (
     ExperimentConfig,
     ModelConfig,
     DataConfig,
     TrainingConfig,
     OptimizerConfig,
 )
-from tff.checkpoint import save_checkpoint
-from tff.metrics import MetricsTracker
-from tff.logging import setup_logging
+from choosy.checkpoint import save_checkpoint
+from choosy.metrics import MetricsTracker
+from choosy.logging import setup_logging
 
 import wandb
 
-log = logging.getLogger("tff.train")
+log = logging.getLogger("choosy.train")
 
 
 def create_optimizer(opt_config) -> optax.GradientTransformation:
@@ -87,20 +87,65 @@ def compute_update_norm(updates) -> float:
     return float(update_norm)
 
 
+def create_model(m: ModelConfig, *, key):
+    """Create model from config, dispatching on model_type."""
+    match m.model_type:
+        case "regular":
+            return RegularTransformer(
+                vocab_size=m.vocab_size, d_model=m.d_model, num_layers=m.num_layers,
+                num_heads=m.num_heads, d_ff=m.d_ff, max_seq_len=m.max_seq_len,
+                dropout_rate=m.dropout_rate, key=key,
+            )
+        case "looped":
+            return LoopedTransformer(
+                vocab_size=m.vocab_size, d_model=m.d_model, num_heads=m.num_heads,
+                d_ff=m.d_ff, num_loops=m.num_loops, max_seq_len=m.max_seq_len,
+                dropout_rate=m.dropout_rate, key=key,
+            )
+        case "choosy":
+            return ChoosyTransformer(
+                vocab_size=m.vocab_size, d_model=m.d_model, num_heads=m.num_heads,
+                d_ff=m.d_ff, num_pool_layers=m.num_pool_layers,
+                num_routing_steps=m.num_routing_steps, max_seq_len=m.max_seq_len,
+                dropout_rate=m.dropout_rate, router_hidden_size=m.router_hidden_size,
+                router_temperature=m.router_temperature,
+                routing_loss_weight=m.routing_loss_weight, key=key,
+            )
+        case _:
+            raise ValueError(f"Unknown model_type: {m.model_type}")
+
+
 def compute_sample_loss(
     input_seq: Int[Array, "seq"],
     target_seq: Int[Array, "seq"],
     key,
     *,
-    model: GPT,
+    model,
 ):
-    logits = model(input_seq, dropout_key=key)  # logits shape: (seq, vocab)
-    loss = optax.softmax_cross_entropy_with_integer_labels(logits, target_seq)
-    return jnp.mean(loss)  # Mean over sequence
+    result = model(input_seq, dropout_key=key)
+
+    # ChoosyTransformer returns (logits, router_logits), others return just logits
+    if isinstance(result, tuple):
+        logits, router_logits = result
+        ce_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits, target_seq))
+
+        # Load-balancing auxiliary loss (encourage uniform layer usage)
+        if key is not None:  # training only
+            probs = jax.nn.softmax(router_logits, axis=-1)  # (K, N)
+            avg_probs = probs.mean(axis=0)  # (N,)
+            N = avg_probs.shape[0]
+            balance_loss = jnp.sum((avg_probs - 1.0 / N) ** 2)
+            return ce_loss + model.routing_loss_weight * balance_loss
+
+        return ce_loss
+    else:
+        logits = result
+        loss = optax.softmax_cross_entropy_with_integer_labels(logits, target_seq)
+        return jnp.mean(loss)
 #
 @eqx.filter_jit
 def compute_loss(
-    model: GPT,
+    model,
     inputs: Int[Array, "batch seq"],
     targets: Int[Array, "batch seq"],
     key: PRNGKeyArray,
@@ -121,13 +166,13 @@ def make_train_step(model_sharding, data_sharding):
     """Create a train step function with sharding."""
     @eqx.filter_jit(donate="all")
     def train_step(
-        model: GPT,
+        model,
         opt_state: optax.OptState,
         optimizer: optax.GradientTransformation,
         inputs: Int[Array, "batch seq"],
         targets: Int[Array, "batch seq"],
         key: PRNGKeyArray,
-    ) -> tuple[GPT, optax.OptState, Float[Array, ""], GPT, GPT]:
+    ) -> tuple:
         """Single training step with sharding."""
         # Apply sharding constraints
         model, opt_state = eqx.filter_shard((model, opt_state), model_sharding)
@@ -153,7 +198,7 @@ def make_eval_step(model_sharding, data_sharding):
     """Create an eval step function with sharding."""
     @eqx.filter_jit
     def eval_step(
-        model: GPT,
+        model,
         inputs: Int[Array, "batch seq"],
         targets: Int[Array, "batch seq"],
     ) -> Float[Array, ""]:
@@ -168,21 +213,21 @@ def make_eval_step(model_sharding, data_sharding):
     return eval_step
 
 
-def train(config: ExperimentConfig) -> GPT:
-    """Train a GPT model using a configuration object.
+def train(config: ExperimentConfig):
+    """Train a model using a configuration object.
 
     Args:
         config: Experiment configuration containing model, data, training, and optimizer settings.
 
     Returns:
-        Trained GPT model
+        Trained model
     """
     m = config.model
     d = config.data
     t = config.training
     o = config.optimizer
 
-    log.info("Training GPT on enwik8")
+    log.info("Training on enwik8")
     cfg_yaml = OmegaConf.to_yaml(OmegaConf.structured(config))
     log.info("Config:\n%s", cfg_yaml.rstrip())
 
@@ -247,19 +292,11 @@ def train(config: ExperimentConfig) -> GPT:
     data_key: PRNGKeyArray
     model_key, data_key = jr.split(key)
 
-    model: GPT = GPT(
-        vocab_size=m.vocab_size,
-        d_model=m.d_model,
-        num_layers=m.num_layers,
-        num_heads=m.num_heads,
-        d_ff=m.d_ff,
-        max_seq_len=m.max_seq_len,
-        dropout_rate=m.dropout_rate,
-        key=model_key,
-    )
+    model = create_model(m, key=model_key)
 
     num_params: int = model.count_parameters()
-    log.info("Model: %s params | Optimizer: %s (lr=%s)", f"{num_params:,}", o.name, o.learning_rate)
+    log.info("Model: %s [%s] | %s params | Optimizer: %s (lr=%s)",
+             m.model_type, type(model).__name__, f"{num_params:,}", o.name, o.learning_rate)
 
     # Initialize optimizer
     optimizer: optax.GradientTransformation = create_optimizer(o)
@@ -445,8 +482,8 @@ def train(config: ExperimentConfig) -> GPT:
         step_key: PRNGKeyArray
         train_key, step_key = jr.split(train_key)
         loss: Float[Array, ""]
-        grads: GPT
-        updates: GPT
+        grads: eqx.Module
+        updates: eqx.Module
         model, opt_state, loss, grads, updates = train_step_fn(
             model, opt_state, optimizer, inputs, targets, step_key
         )
@@ -625,7 +662,7 @@ def main(cfg: DictConfig) -> None:
     setup_logging()
 
     # Train model
-    model: GPT = train(config)
+    model = train(config)
 
 
 if __name__ == "__main__":

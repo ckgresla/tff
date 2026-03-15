@@ -9,8 +9,8 @@ This script demonstrates:
 import jax.numpy as jnp
 import jax.random as jr
 
-from tff.checkpoint import load_checkpoint, load_best_checkpoint, list_checkpoints
-from tff.train import train
+from choosy.checkpoint import load_checkpoint, load_best_checkpoint, list_checkpoints
+from choosy.train import train
 
 
 def example_load_and_use():
@@ -86,7 +86,7 @@ def example_continue_training():
 
     # Modify config for continued training
     # Note: Pydantic configs are frozen, so we need to create a new one
-    from tff.config import ExperimentConfig, TrainingConfig
+    from choosy.config import ExperimentConfig, TrainingConfig
 
     new_config = ExperimentConfig(
         model=config.model,  # Keep same model architecture
@@ -135,7 +135,7 @@ Key points:
 5. The config is automatically loaded and used to reconstruct the model
 
 Quick reference:
-    from tff.checkpoint import load_checkpoint, load_best_checkpoint
+    from choosy.checkpoint import load_checkpoint, load_best_checkpoint
 
     # Load best model
     model, config = load_best_checkpoint("checkpoints")

@@ -1,5 +1,5 @@
 [project]
-name = "tff"
+name = "choosy"
 version = "0.0.0"
 description = "could a transformer, learn to form itself?"
 readme = "README.md"
@@ -31,7 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-hello = "tff.__main__:main"
+hello = "choosy.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["tff"]
+packages = ["choosy"]
