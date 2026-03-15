@@ -72,7 +72,8 @@ class ChoosyTransformer(eqx.Module):
         self.num_heads = num_heads
         self.max_seq_len = max_seq_len
         self.routing_loss_weight = routing_loss_weight
-        self.router_temperature = router_temperature
+        # Store as jnp scalar so it can be updated via eqx.tree_at for annealing
+        self.router_temperature = jnp.float32(router_temperature)
 
         keys = jr.split(key, num_pool_layers + 4)
 

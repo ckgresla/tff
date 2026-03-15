@@ -31,6 +31,8 @@ class ModelConfig:
     num_routing_steps: int = 8
     router_hidden_size: int = 256
     router_temperature: float = 1.0
+    router_temp_start: Optional[float] = None  # if set, anneal from start → end over training
+    router_temp_end: Optional[float] = None
     routing_loss_weight: float = 0.01
 
 

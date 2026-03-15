@@ -479,6 +479,12 @@ def train(config: ExperimentConfig):
 
             log.debug("=" * 70)
 
+        # Temperature annealing for choosy model
+        if m.model_type == "choosy" and m.router_temp_start is not None:
+            frac = step / max(t.num_steps - 1, 1)
+            temp = m.router_temp_start + (m.router_temp_end - m.router_temp_start) * frac
+            model = eqx.tree_at(lambda mdl: mdl.router_temperature, model, jnp.float32(temp))
+
         # Train step
         step_key: PRNGKeyArray
         train_key, step_key = jr.split(train_key)
@@ -541,6 +547,10 @@ def train(config: ExperimentConfig):
                 }
                 for metric_name, metric_value in model_metrics.items():
                     wandb_metrics[f"health/{metric_name}"] = metric_value
+
+                # Log router temperature if annealing
+                if m.model_type == "choosy" and m.router_temp_start is not None:
+                    wandb_metrics["routing/temperature"] = float(model.router_temperature)
 
                 wandb.log(wandb_metrics)
 
