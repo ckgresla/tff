@@ -22,6 +22,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from omegaconf import DictConfig, OmegaConf
 
 from choosy.data import Enwik8Dataset
+from choosy.eval import evaluate_by_content_type, evaluate_routing_patterns
 from choosy.modeling import RegularTransformer, LoopedTransformer, ChoosyTransformer
 from choosy.config import (
     ExperimentConfig,
@@ -605,7 +606,7 @@ def train(config: ExperimentConfig):
             save_checkpoint(model, config, checkpoint_path, ckpt_name)
             log.info("Checkpoint saved: '%s/%s.eqx'", checkpoint_path, ckpt_name)
 
-    # Final evaluation
+    # Final evaluation: validation loss
     eval_key, _ = jr.split(train_key)
     eval_batches = valid_data.iterate_batches(d.batch_size, eval_key, num_batches=100)
 
@@ -628,6 +629,71 @@ def train(config: ExperimentConfig):
         "Done | Loss: %.4f | BPC: %.4f | Best BPC: %.4f | %.1fmin",
         float(final_loss), float(final_bpc), float(best_bpc), total_time / 60,
     )
+
+    # Final evaluation: content-type BPC on test set
+    log.info("Running content-type evaluation on test set...")
+    # Use inference model (no sharding needed — eval runs on single device)
+    inference_model = jax.tree.map(
+        lambda x: x.addressable_shards[0].data if hasattr(x, 'addressable_shards') else x,
+        model,
+    )
+    content_results = evaluate_by_content_type(
+        inference_model, d.data_path, seq_len=d.seq_len, max_sequences=1000,
+    )
+
+    # Routing analysis for choosy model
+    routing_results = None
+    if m.model_type == "choosy":
+        log.info("Running routing pattern analysis...")
+        routing_results = evaluate_routing_patterns(
+            inference_model, d.data_path, seq_len=d.seq_len, max_sequences=500,
+        )
+
+    # Log final results to wandb
+    if use_wandb:
+        final_metrics = {
+            "final/loss": float(final_loss),
+            "final/bpc": float(final_bpc),
+            "final/best_bpc": float(best_bpc),
+            "final/overall_bpc_test": content_results["overall_bpc"],
+        }
+
+        # Per-content-type BPC
+        for type_name, info in content_results["per_type"].items():
+            final_metrics[f"final/bpc_{type_name}"] = info["bpc"]
+            final_metrics[f"final/count_{type_name}"] = info["count"]
+
+        # Content type distribution
+        for type_name, frac in content_results["tag_distribution"].items():
+            final_metrics[f"data/fraction_{type_name}"] = frac
+
+        # Routing metrics (choosy only)
+        if routing_results is not None:
+            final_metrics["final/routing_entropy"] = routing_results["routing_entropy"]
+            for i, usage in enumerate(routing_results["overall_layer_usage"]):
+                final_metrics[f"routing/layer_{i}_usage"] = usage
+
+            # Log routing heatmap as a wandb Table
+            columns = ["content_type"] + [f"layer_{i}" for i in range(len(routing_results["overall_layer_usage"]))]
+            table_data = []
+            for type_name, usage in sorted(routing_results["layer_usage"].items()):
+                table_data.append([type_name] + usage)
+            table_data.append(["_overall"] + routing_results["overall_layer_usage"])
+            wandb.log({"routing/heatmap": wandb.Table(columns=columns, data=table_data)})
+
+        wandb.log(final_metrics)
+
+    # Save content-type results to disk
+    if checkpoint_path is not None:
+        import json
+        results_path = checkpoint_path / "content_eval.json"
+        with open(results_path, "w") as f:
+            json.dump(content_results, f, indent=2)
+        if routing_results is not None:
+            routing_path = checkpoint_path / "routing_eval.json"
+            with open(routing_path, "w") as f:
+                json.dump(routing_results, f, indent=2)
+        log.info("Eval results saved to '%s'", checkpoint_path)
 
     # Finalize metrics tracking
     if metrics_tracker is not None:
