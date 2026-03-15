@@ -119,6 +119,42 @@ enwik8 is Wikipedia XML, naturally containing distinct byte-level content types:
 Hypothesis: the ChoosyTransformer should route different content types to different layers.
 If it does, we have evidence of learned specialization.
 
+** Results (exp1, 3 seeds, toy config)
+| Model              | BPC (s42) | BPC (s137) | BPC (s271) | Mean |
+|--------------------+-----------+------------+------------+------|
+| Regular (4 layers) |      2.64 |       2.60 |       2.70 | 2.65 |
+| Looped (1×4 loops) |      2.72 |       2.69 |       2.76 | 2.72 |
+| Choosy (4 pool×4)  |      2.89 |       2.86 |       3.19 | 2.98 |
+| Choosy (no bal.)   |      2.87 |       2.84 |        —   | 2.86 |
+
+*** FINDING: total routing collapse
+- Routing entropy = 0.0 across all choosy runs
+- Layer 0 receives 100% of routing decisions, layers 1-3 completely unused
+- Both with and without balancing loss (0.01 weight too weak)
+- Choosy model is effectively a looped transformer with dead params
+- Seed 271 is an outlier (3.19 BPC) → routing instability across inits
+- Content-type BPC pattern (xml < entity < whitespace < prose < number) identical across all models
+
+* Experiment 1.1: fix routing collapse
+** Motivation
+Exp1 showed the Gumbel-softmax ST router collapses to always selecting one layer.
+The router finds a local optimum early and never explores — no gradient signal from
+unselected layers saying "I could have done better."
+
+** Approach: temperature annealing + balancing loss sweep
+- All runs use temperature annealing: 2.0 → 0.5 over training
+  - High temp early → Gumbel noise dominates → near-uniform layer selection → all layers train
+  - Low temp late → router logits dominate → sharp specialized routing
+- Sweep balancing loss weight: 0.01, 0.005, 0.05, 0.1, 0.25, 0.5, 1.0
+  - 0.01 is the control (same as exp1 but with annealing)
+  - Want to find the sweet spot: enough to prevent collapse, not so much it hurts BPC
+
+** Key questions
+1. Does annealing alone (weight=0.01) fix the collapse?
+2. What balancing weight gives best BPC while maintaining layer diversity?
+3. Is there a tradeoff: higher balance → more layer diversity but worse BPC?
+4. Does the routing pattern differ by content type at any weight?
+
 * Related work
 ** Universal Transformers (Dehghani et al., 2018)
 - https://arxiv.org/abs/1807.03819
