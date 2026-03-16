@@ -128,30 +128,28 @@ class ExperimentConfig:
     optimizer: OptimizerConfig = field(default_factory=AdamWConfig)
 
     @classmethod
-    def from_dictconfig(cls, cfg: "DictConfig") -> "ExperimentConfig":
-        """Construct typed ExperimentConfig from a Hydra DictConfig.
+    def _from_dict(cls, d: dict) -> "ExperimentConfig":
+        """Construct typed ExperimentConfig from a plain dict.
 
-        Resolves interpolations, picks the correct optimizer dataclass
-        based on the 'name' field, and returns a fully typed instance.
+        Uses OmegaConf.merge to generically coerce nested dicts into their
+        typed dataclass counterparts. The only special case is optimizer
+        polymorphism (AdamW vs Adam vs SGD), which requires dispatching
+        on the 'name' field.
         """
-        import dataclasses as _dc
+        # Resolve optimizer polymorphism — the one inherently type-specific bit
+        opt_name = d.get("optimizer", {}).get("name", "adamw")
+        opt_cls = _OPTIMIZER_REGISTRY[opt_name]
 
+        # Build a schema with the correct optimizer type, then merge the data in
+        schema = OmegaConf.structured(cls(optimizer=opt_cls()))
+        merged = OmegaConf.merge(schema, d)
+        return OmegaConf.to_object(merged)
+
+    @classmethod
+    def from_dictconfig(cls, cfg: "DictConfig") -> "ExperimentConfig":
+        """Construct typed ExperimentConfig from a Hydra DictConfig."""
         d = OmegaConf.to_container(cfg, resolve=True)
-
-        def _pick(dc_cls: type, section: dict) -> dict:
-            """Keep only keys that are actual dataclass fields."""
-            valid = {f.name for f in _dc.fields(dc_cls)}
-            return {k: v for k, v in section.items() if k in valid}
-
-        opt_dict = d["optimizer"]
-        opt_cls = _OPTIMIZER_REGISTRY[opt_dict["name"]]
-
-        return cls(
-            model=ModelConfig(**_pick(ModelConfig, d["model"])),
-            data=DataConfig(**_pick(DataConfig, d["data"])),
-            training=TrainingConfig(**_pick(TrainingConfig, d["training"])),
-            optimizer=opt_cls(**_pick(opt_cls, opt_dict)),
-        )
+        return cls._from_dict(d)
 
     def save_json(self, path: Path | str) -> None:
         """Save configuration to JSON file."""
@@ -165,24 +163,10 @@ class ExperimentConfig:
     @classmethod
     def load_json(cls, path: Path | str) -> "ExperimentConfig":
         """Load configuration from JSON file."""
-        import dataclasses as _dc
         path = Path(path)
         with open(path, "r") as f:
             d = json.load(f)
-
-        def _pick(dc_cls: type, section: dict) -> dict:
-            valid = {f.name for f in _dc.fields(dc_cls)}
-            return {k: v for k, v in section.items() if k in valid}
-
-        opt_dict = d["optimizer"]
-        opt_cls = _OPTIMIZER_REGISTRY[opt_dict["name"]]
-
-        return cls(
-            model=ModelConfig(**_pick(ModelConfig, d["model"])),
-            data=DataConfig(**_pick(DataConfig, d["data"])),
-            training=TrainingConfig(**_pick(TrainingConfig, d["training"])),
-            optimizer=opt_cls(**_pick(opt_cls, opt_dict)),
-        )
+        return cls._from_dict(d)
 
     def summary(self) -> str:
         """Generate a human-readable summary of the configuration."""
