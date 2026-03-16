@@ -165,11 +165,24 @@ class ExperimentConfig:
     @classmethod
     def load_json(cls, path: Path | str) -> "ExperimentConfig":
         """Load configuration from JSON file."""
+        import dataclasses as _dc
         path = Path(path)
         with open(path, "r") as f:
-            config_dict = json.load(f)
-        cfg = OmegaConf.structured(cls(**config_dict))
-        return OmegaConf.to_object(cfg)
+            d = json.load(f)
+
+        def _pick(dc_cls: type, section: dict) -> dict:
+            valid = {f.name for f in _dc.fields(dc_cls)}
+            return {k: v for k, v in section.items() if k in valid}
+
+        opt_dict = d["optimizer"]
+        opt_cls = _OPTIMIZER_REGISTRY[opt_dict["name"]]
+
+        return cls(
+            model=ModelConfig(**_pick(ModelConfig, d["model"])),
+            data=DataConfig(**_pick(DataConfig, d["data"])),
+            training=TrainingConfig(**_pick(TrainingConfig, d["training"])),
+            optimizer=opt_cls(**_pick(opt_cls, opt_dict)),
+        )
 
     def summary(self) -> str:
         """Generate a human-readable summary of the configuration."""

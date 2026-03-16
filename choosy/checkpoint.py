@@ -8,7 +8,6 @@ import jax.random as jr
 import equinox as eqx
 from jaxtyping import PRNGKeyArray
 
-from choosy.modeling import RegularTransformer
 from choosy.config import ExperimentConfig
 
 log = logging.getLogger(__name__)
@@ -74,19 +73,11 @@ def load_checkpoint(
     config = ExperimentConfig.load_json(config_path)
 
     # Initialize model with same architecture
+    from choosy.train import create_model
     if key is None:
         key = jr.PRNGKey(config.training.seed)
 
-    model = RegularTransformer(
-        vocab_size=config.model.vocab_size,
-        d_model=config.model.d_model,
-        num_layers=config.model.num_layers,
-        num_heads=config.model.num_heads,
-        d_ff=config.model.d_ff,
-        max_seq_len=config.model.max_seq_len,
-        dropout_rate=config.model.dropout_rate,
-        key=key,
-    )
+    model = create_model(config.model, key=key)
 
     # Load model weights
     model_path = checkpoint_dir / f"{name}.eqx"
