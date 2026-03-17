@@ -140,6 +140,13 @@ class ExperimentConfig:
         polymorphism (AdamW vs Adam vs SGD), which requires dispatching
         on the 'name' field.
         """
+        # Strip Hydra internal keys (_target_, _recursive_, etc.) from all levels
+        def _clean(obj):
+            if isinstance(obj, dict):
+                return {k: _clean(v) for k, v in obj.items() if not k.startswith("_")}
+            return obj
+        d = _clean(d)
+
         # Resolve optimizer polymorphism — the one inherently type-specific bit
         opt_name = d.get("optimizer", {}).get("name", "adamw")
         opt_cls = _OPTIMIZER_REGISTRY[opt_name]
