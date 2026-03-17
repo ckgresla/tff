@@ -103,6 +103,10 @@ class TrainingConfig:
     log_every: int = 100
     seed: int = 42
 
+    # LR schedule
+    lr_schedule: str = "constant"  # "constant" or "cosine"
+    warmup_steps: int = 0          # linear warmup before schedule kicks in
+
     # Checkpointing
     checkpoint_dir: Optional[str] = None
     save_every: int = 1000

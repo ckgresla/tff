@@ -40,19 +40,32 @@ import wandb
 log = logging.getLogger("choosy.train")
 
 
-def create_optimizer(opt_config) -> optax.GradientTransformation:
-    """Create optimizer from config.
+def make_lr_schedule(opt_config, training_config):
+    """Create learning rate schedule from config."""
+    lr = opt_config.learning_rate
+    match training_config.lr_schedule:
+        case "constant":
+            return lr
+        case "cosine":
+            return optax.warmup_cosine_decay_schedule(
+                init_value=0.0 if training_config.warmup_steps > 0 else lr,
+                peak_value=lr,
+                warmup_steps=training_config.warmup_steps,
+                decay_steps=training_config.num_steps,
+                end_value=lr * 0.1,
+            )
+        case _:
+            raise ValueError(f"Unknown lr_schedule: {training_config.lr_schedule}")
 
-    Args:
-        opt_config: Optimizer configuration dataclass
 
-    Returns:
-        Optax optimizer
-    """
+def create_optimizer(opt_config, training_config) -> optax.GradientTransformation:
+    """Create optimizer with LR schedule from config."""
+    schedule = make_lr_schedule(opt_config, training_config)
+
     match opt_config.name:
         case "adamw":
             return optax.adamw(
-                learning_rate=opt_config.learning_rate,
+                learning_rate=schedule,
                 b1=opt_config.beta1,
                 b2=opt_config.beta2,
                 eps=opt_config.eps,
@@ -60,7 +73,7 @@ def create_optimizer(opt_config) -> optax.GradientTransformation:
             )
         case "adam":
             return optax.adam(
-                learning_rate=opt_config.learning_rate,
+                learning_rate=schedule,
                 b1=opt_config.beta1,
                 b2=opt_config.beta2,
                 eps=opt_config.eps,
@@ -68,12 +81,12 @@ def create_optimizer(opt_config) -> optax.GradientTransformation:
         case "sgd":
             if opt_config.momentum > 0:
                 return optax.sgd(
-                    learning_rate=opt_config.learning_rate,
+                    learning_rate=schedule,
                     momentum=opt_config.momentum,
                     nesterov=opt_config.nesterov,
                 )
             else:
-                return optax.sgd(learning_rate=opt_config.learning_rate)
+                return optax.sgd(learning_rate=schedule)
         case _:
             raise ValueError(f"Unknown optimizer: {opt_config.name}")
 
@@ -300,7 +313,7 @@ def train(config: ExperimentConfig):
              m.model_type, type(model).__name__, f"{num_params:,}", o.name, o.learning_rate)
 
     # Initialize optimizer
-    optimizer: optax.GradientTransformation = create_optimizer(o)
+    optimizer: optax.GradientTransformation = create_optimizer(o, t)
     opt_state: optax.OptState = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     # Create train and eval step functions with appropriate sharding
