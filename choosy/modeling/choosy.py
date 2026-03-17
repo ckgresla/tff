@@ -9,6 +9,10 @@ Routing uses Gumbel-softmax with straight-through estimation:
   - Forward: hard routing (argmax), selected layer output at full strength
   - Backward: soft gradients flow to the router via the ST estimator
   - No output dilution, router learns selection preferences from main loss
+
+Block pool uses stacked parameters (all N blocks' weights in single arrays
+with leading N dim) + dynamic indexing instead of lax.switch. This gives
+O(1) JIT compilation regardless of pool size.
 """
 
 import jax
@@ -18,6 +22,30 @@ import equinox as eqx
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from choosy.modeling.transformer import Block
+from choosy.modeling.looped import _sinusoidal_embeddings
+
+
+def _stack_blocks(blocks: list[Block]) -> Block:
+    """Stack N blocks into a single Block-shaped pytree with leading N dim.
+
+    Array leaves get shape (N, ...), non-array leaves keep the first block's value.
+    """
+    return jax.tree.map(
+        lambda *leaves: jnp.stack(leaves) if eqx.is_array(leaves[0]) else leaves[0],
+        *blocks,
+    )
+
+
+def _select_block(pool: Block, idx) -> Block:
+    """Index into a stacked pool to get one block's parameters.
+
+    Array leaves: (N, ...) → (...) via [idx] indexing.
+    Non-array leaves: passed through unchanged.
+    """
+    return jax.tree.map(
+        lambda leaf: leaf[idx] if eqx.is_array(leaf) else leaf,
+        pool,
+    )
 
 
 class ChoosyTransformer(eqx.Module):
@@ -44,8 +72,9 @@ class ChoosyTransformer(eqx.Module):
     wte: eqx.nn.Embedding
     wpe: eqx.nn.Embedding
     drop: eqx.nn.Dropout
-    blocks: list[Block]     # pool of N blocks
+    pool: Block              # stacked Block: array leaves have shape (N, ...)
     router: eqx.nn.MLP      # d_model → num_pool_layers
+    step_emb: Array          # (num_routing_steps, d_model), sinusoidal
     ln_f: eqx.nn.LayerNorm
     lm_head: eqx.nn.Linear
 
@@ -81,13 +110,14 @@ class ChoosyTransformer(eqx.Module):
         self.wpe = eqx.nn.Embedding(max_seq_len, d_model, key=keys[1])
         self.drop = eqx.nn.Dropout(dropout_rate)
 
-        # Pool of N distinct transformer blocks
-        self.blocks = [
+        # Pool of N distinct transformer blocks, stacked for O(1) JIT
+        blocks = [
             Block(d_model, num_heads, d_ff, max_seq_len, dropout_rate, key=keys[i + 2])
             for i in range(num_pool_layers)
         ]
+        self.pool = _stack_blocks(blocks)
 
-        # Router: mean-pooled hidden state → logits over N layers
+        # Router: mean-pooled hidden state + step embedding → logits over N layers
         self.router = eqx.nn.MLP(
             in_size=d_model,
             out_size=num_pool_layers,
@@ -97,12 +127,16 @@ class ChoosyTransformer(eqx.Module):
             key=keys[num_pool_layers + 2],
         )
 
+        # Step embeddings: tell the router which step it's on (frozen sinusoidal)
+        self.step_emb = _sinusoidal_embeddings(num_routing_steps, d_model)
+
         self.ln_f = eqx.nn.LayerNorm(d_model)
         self.lm_head = eqx.nn.Linear(d_model, vocab_size, key=keys[num_pool_layers + 3])
 
     def _route_and_apply(
         self,
         x: Float[Array, "seq d_model"],
+        step: int,
         router_key: PRNGKeyArray | None,
         block_key: PRNGKeyArray | None,
     ) -> tuple[Float[Array, "seq d_model"], Float[Array, "pool"]]:
@@ -115,15 +149,9 @@ class ChoosyTransformer(eqx.Module):
         During inference (router_key is None):
           - Deterministic argmax routing, no gating
         """
-        # Router decision
-        pooled = x.mean(axis=0)              # (d_model,)
-        logits = self.router(pooled)          # (num_pool_layers,)
-
-        # Build branch functions for lax.switch (one per block in the pool)
-        def _make_fn(block, dk):
-            def fn(x_in):
-                return block(x_in, dropout_key=dk)
-            return fn
+        # Router decision: mean-pool hidden state + step embedding
+        pooled = x.mean(axis=0) + self.step_emb[step]  # (d_model,)
+        logits = self.router(pooled)                     # (num_pool_layers,)
 
         if router_key is not None:
             # --- Training: Gumbel-softmax with straight-through ---
@@ -136,13 +164,11 @@ class ChoosyTransformer(eqx.Module):
             # Hard selection in forward pass
             selected = jnp.argmax(perturbed)
 
-            # Apply selected block (only this one fires)
-            branch_fns = [_make_fn(b, block_key) for b in self.blocks]
-            block_output = jax.lax.switch(selected, branch_fns, x)
+            # Index into stacked pool to get one block (no lax.switch!)
+            block = _select_block(self.pool, selected)
+            block_output = block(x, dropout_key=block_key)
 
-            # Straight-through gate for router gradient flow:
-            #   forward: gate = 1.0 (hard one-hot value), so x_out = block_output
-            #   backward: gate has soft_weights gradient, so router gets signal
+            # Straight-through gate for router gradient flow
             hard_gate = jnp.float32(1.0)
             soft_gate = soft_weights[selected]
             gate = hard_gate + (soft_gate - jax.lax.stop_gradient(soft_gate))
@@ -151,8 +177,8 @@ class ChoosyTransformer(eqx.Module):
         else:
             # --- Inference: deterministic argmax ---
             selected = jnp.argmax(logits)
-            branch_fns = [_make_fn(b, None) for b in self.blocks]
-            x_out = jax.lax.switch(selected, branch_fns, x)
+            block = _select_block(self.pool, selected)
+            x_out = block(x, dropout_key=None)
 
         return x_out, logits
 
@@ -189,7 +215,7 @@ class ChoosyTransformer(eqx.Module):
             else:
                 router_key = block_key = None
 
-            x, step_logits = self._route_and_apply(x, router_key, block_key)
+            x, step_logits = self._route_and_apply(x, step, router_key, block_key)
             all_router_logits.append(step_logits)
 
         # Final layer norm + projection
@@ -218,17 +244,12 @@ class ChoosyTransformer(eqx.Module):
         metrics["grad_norm/wte"] = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(wte_grads))))
         metrics["grad_norm/wpe"] = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(wpe_grads))))
 
-        # Per-block gradient norms (pool layers)
-        for i, block_grad in enumerate(grads.blocks):
+        # Per-block gradient norms (from stacked pool grads)
+        for i in range(self.num_pool_layers):
+            block_grad = _select_block(grads.pool, i)
             block_params = eqx.filter(block_grad, eqx.is_inexact_array)
             block_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(block_params)))
             metrics[f"grad_norm/pool_block_{i}"] = float(block_norm)
-
-            attn_grads = eqx.filter(block_grad.attn, eqx.is_inexact_array)
-            metrics[f"grad_norm/pool_block_{i}_attn"] = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(attn_grads))))
-
-            mlp_grads = eqx.filter(block_grad.mlp, eqx.is_inexact_array)
-            metrics[f"grad_norm/pool_block_{i}_mlp"] = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(mlp_grads))))
 
         # Router gradient norm
         router_grads = eqx.filter(grads.router, eqx.is_inexact_array)
