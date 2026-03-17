@@ -74,6 +74,7 @@ class ChoosyTransformer(eqx.Module):
     drop: eqx.nn.Dropout
     pool: Block              # stacked Block: array leaves have shape (N, ...)
     router: eqx.nn.MLP      # d_model → num_pool_layers
+    content_gru: eqx.nn.GRUCell  # recurrent content vector for routing context
     step_emb: Array          # (num_routing_steps, d_model), sinusoidal
     ln_f: eqx.nn.LayerNorm
     lm_head: eqx.nn.Linear
@@ -104,7 +105,7 @@ class ChoosyTransformer(eqx.Module):
         # Store as jnp scalar so it can be updated via eqx.tree_at for annealing
         self.router_temperature = jnp.float32(router_temperature)
 
-        keys = jr.split(key, num_pool_layers + 4)
+        keys = jr.split(key, num_pool_layers + 5)
 
         self.wte = eqx.nn.Embedding(vocab_size, d_model, key=keys[0])
         self.wpe = eqx.nn.Embedding(max_seq_len, d_model, key=keys[1])
@@ -117,7 +118,7 @@ class ChoosyTransformer(eqx.Module):
         ]
         self.pool = _stack_blocks(blocks)
 
-        # Router: mean-pooled hidden state + step embedding → logits over N layers
+        # Router: content vector + step embedding → logits over N layers
         self.router = eqx.nn.MLP(
             in_size=d_model,
             out_size=num_pool_layers,
@@ -127,19 +128,24 @@ class ChoosyTransformer(eqx.Module):
             key=keys[num_pool_layers + 2],
         )
 
+        # Recurrent content vector: GRU accumulates routing context across steps
+        # Input: mean-pooled hidden state (d_model), State: content vector (d_model)
+        self.content_gru = eqx.nn.GRUCell(d_model, d_model, key=keys[num_pool_layers + 3])
+
         # Step embeddings: tell the router which step it's on (frozen sinusoidal)
         self.step_emb = _sinusoidal_embeddings(num_routing_steps, d_model)
 
         self.ln_f = eqx.nn.LayerNorm(d_model)
-        self.lm_head = eqx.nn.Linear(d_model, vocab_size, key=keys[num_pool_layers + 3])
+        self.lm_head = eqx.nn.Linear(d_model, vocab_size, key=keys[num_pool_layers + 4])
 
     def _route_and_apply(
         self,
         x: Float[Array, "seq d_model"],
+        content: Float[Array, "d_model"],
         step: int,
         router_key: PRNGKeyArray | None,
         block_key: PRNGKeyArray | None,
-    ) -> tuple[Float[Array, "seq d_model"], Float[Array, "pool"]]:
+    ) -> tuple[Float[Array, "seq d_model"], Float[Array, "d_model"], Float[Array, "pool"]]:
         """Single routing step: router picks a layer, that layer is applied.
 
         Uses Gumbel-softmax ST during training (router_key is not None):
@@ -148,10 +154,18 @@ class ChoosyTransformer(eqx.Module):
 
         During inference (router_key is None):
           - Deterministic argmax routing, no gating
+
+        Returns:
+            x_out: updated hidden state
+            content_out: updated content vector (for next step)
+            logits: router logits for this step
         """
-        # Router decision: mean-pool hidden state + step embedding
-        pooled = x.mean(axis=0) + self.step_emb[step]  # (d_model,)
-        logits = self.router(pooled)                     # (num_pool_layers,)
+        # Update content vector with current hidden state summary
+        summary = x.mean(axis=0)                                    # (d_model,)
+        content = self.content_gru(summary, content)                # (d_model,)
+
+        # Router decision: content vector + step embedding
+        logits = self.router(content + self.step_emb[step])         # (num_pool_layers,)
 
         if router_key is not None:
             # --- Training: Gumbel-softmax with straight-through ---
@@ -180,7 +194,7 @@ class ChoosyTransformer(eqx.Module):
             block = _select_block(self.pool, selected)
             x_out = block(x, dropout_key=None)
 
-        return x_out, logits
+        return x_out, content, logits
 
     def __call__(
         self,
@@ -209,13 +223,16 @@ class ChoosyTransformer(eqx.Module):
 
         all_router_logits = []
 
+        # Initialize recurrent content vector (zeros — GRU will populate)
+        content = jnp.zeros(self.d_model)
+
         for step in range(self.num_routing_steps):
             if step_keys[step] is not None:
                 router_key, block_key = jr.split(step_keys[step])
             else:
                 router_key = block_key = None
 
-            x, step_logits = self._route_and_apply(x, step, router_key, block_key)
+            x, content, step_logits = self._route_and_apply(x, content, step, router_key, block_key)
             all_router_logits.append(step_logits)
 
         # Final layer norm + projection
