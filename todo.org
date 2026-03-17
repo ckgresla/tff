@@ -155,6 +155,70 @@ unselected layers saying "I could have done better."
 3. Is there a tradeoff: higher balance → more layer diversity but worse BPC?
 4. Does the routing pattern differ by content type at any weight?
 
+** Results (exp1.1, 3 seeds, toy config, all with annealing 2.0→0.5)
+| Balance wt | BPC (s42) | BPC (s137) | BPC (s271) | Mean |
+|------------+-----------+------------+------------+------|
+|      0.005 |      2.88 |       2.80 |       2.90 | 2.86 |
+|       0.01 |      2.89 |       2.84 |       2.97 | 2.90 |
+|       0.05 |      2.88 |       2.67 |       2.84 | 2.80 |
+|        0.1 |      2.80 |       2.81 |       2.76 | 2.79 |
+|       0.25 |      2.75 |       2.76 |       2.69 | 2.73 |
+|        0.5 |      3.00 |       3.02 |       2.79 | 2.94 |
+|        1.0 |      2.63 |       2.66 |       2.76 | 2.68 |
+(reference: Regular=2.65, Looped=2.72)
+
+*** FINDING: annealing alone doesn't fix collapse
+- Low weights (0.005, 0.01) still collapse — annealing is necessary but not sufficient
+- Weight 1.0 gets best BPC (2.68, matching regular) but routing is *uniform*
+- Weight 0.25 is most consistent across seeds (low variance)
+- Weight 0.5 is a consistent dip — unstable middle ground
+
+*** FINDING: routing trajectory analysis
+- bal1.0: ONE fixed trajectory for all inputs [0,3,2,1] — it's a regular transformer in disguise
+- bal0.25: 2 trajectories, XML gets a different path from prose (at seq_len=64)
+- bal0.1: 4 trajectories, content-dependent with layer reuse (prose repeats L1, XML repeats L3)
+- But the content-dependent routing (bal0.1) gives WORSE BPC than uniform (bal1.0)
+- The router's specialization isn't paying off — uniform parameter utilization wins
+
+*** FINDING: architectural limitation identified
+- Router uses sequence-level mean-pooling → one decision per step for entire sequence
+- At seq_len=256, sequences are mixed content — the router can't see fine-grained content types
+- At seq_len=64 (eval only), purer sequences reveal content-dependent routing exists
+- But the model was trained at seq_len=256, so the routing was never incentivized to specialize
+- The router is also stateless across steps — no memory of what layers were already applied
+
+* Experiment 1.2: scaled-up GRU router
+** Motivation
+Exp1.1 showed the router's two main limitations:
+1. Mean-pool erases content specificity (sequence-level decision for mixed content)
+2. No memory across steps (stateless: doesn't know what's been applied)
+
+Addressing (2) first: replace stateless mean-pool with a recurrent content vector (GRU)
+that accumulates routing context across steps. Also scale up to full-size models and
+sweep learning rate + schedule to find better training dynamics.
+
+** Architecture changes
+- GRU content vector: at each step, summary = mean_pool(x), content = GRU(summary, content_prev)
+- Router input: content + step_embedding (vs old: mean_pool(x) + step_embedding)
+- Step embeddings (sinusoidal, as in looped transformer) — already added in exp1.1 code
+- Stacked parameter pool replaces lax.switch — O(1) JIT regardless of pool size
+  (full 8×8 model: JIT went from 7+ min to 59s)
+
+** Setup
+- Full scale: d_model=512, 8 heads, d_ff=2048, 15K steps
+- Balance weights: {0.01, 0.1, 0.25, 1.0}
+- Learning rates: {3e-4, 6e-4, 1e-3}
+- Schedules: {constant, cosine w/ 500-step warmup}
+- Annealing: 2.0 → 0.5 (all choosy runs)
+- Seeds: {42, 137}
+- Plus baselines (Regular-8L, Looped-8x) at same LR/schedule grid
+
+** Key questions
+1. Does the GRU give the router enough context to meaningfully specialize layers?
+2. Does scale (28M params vs 1.2M) change the routing collapse dynamics?
+3. Does cosine+warmup help the router explore before committing?
+4. Can choosy match or beat the baselines with genuine routing, not just uniform utilization?
+
 * Related work
 ** Universal Transformers (Dehghani et al., 2018)
 - https://arxiv.org/abs/1807.03819
