@@ -219,6 +219,73 @@ sweep learning rate + schedule to find better training dynamics.
 3. Does cosine+warmup help the router explore before committing?
 4. Can choosy match or beat the baselines with genuine routing, not just uniform utilization?
 
+** Results (exp1.2, 46/72 runs completed before stopping, seed 42 full, seed 137 baselines only)
+*** Baselines at full scale (best config: lr1e-3, cosine schedule)
+| Model              | Params | BPC (s42) | BPC (s137) | Mean  |
+|--------------------+--------+-----------+------------+-------|
+| Regular (8 layers) | 27.8M  |    1.5040 |     1.4921 | 1.498 |
+| Looped (1×8 loops) |  5.8M  |    1.6262 |     1.5871 | 1.607 |
+- Cosine schedule with lr=1e-3 wins consistently for both models
+- Regular at ~1.50 BPC — much better than toy-scale 2.65
+- Looped competitive despite 5× fewer params
+
+*** Choosy sweep (seed 42, all configs complete)
+| Config                   | BPC    | vs Regular |
+|--------------------------+--------+------------|
+| bal0.25-lr6e-4-cos       | 1.5241 |     +0.020 |
+| bal0.25-lr1e-3-cos       | 1.5332 |     +0.029 |
+| bal0.1-lr1e-3-cos        | 1.5574 |     +0.053 |
+| bal0.1-lr6e-4-constant   | 1.6132 |     +0.109 |
+| bal0.01-lr3e-4-constant  | 1.6632 |     +0.159 |
+| bal0.01-lr3e-4-cos       | 3.1406 |  (diverged) |
+- Best choosy (bal0.25-lr6e-4-cos) is 0.02 BPC behind regular
+- Gap is much smaller than toy scale (was 0.3+ BPC)
+- Cosine schedule generally helps, lr=6e-4 or 1e-3 best
+- bal0.01-lr3e-4-cos diverged — low balance + cosine is unstable
+
+*** FINDING: GRU content vector did not change routing behavior
+- Best BPC runs (bal0.25) still show perfectly uniform routing (0.125 per layer)
+- No content-type differentiation: prose and XML get identical layer distributions
+- The one run with non-uniform routing (bal0.1-lr1e-3-cos: layer 2 at 22%, layer 3 at 4%)
+  shows slight XML/prose differences but worse BPC
+- Same pattern as exp1.1: uniform routing = best BPC, smart routing = worse BPC
+
+*** FINDING: choosy converges to emulating a regular transformer
+- At every scale and configuration tested, the best choosy model is one that routes uniformly
+- Uniform routing with distinct blocks = regular transformer with permuted layer ordering
+- The router never learns to do something a fixed ordering can't
+- Choosy beats looped (1.52 vs 1.63) but only because it has 5× more params (distinct vs shared blocks)
+- Choosy never beats regular (same param count), and is 0.02 BPC behind at best
+
+*** Experiment 1 series: overall conclusions
+Three experiments (exp1, exp1.1, exp1.2) spanning:
+- 2 scales: toy (d=128, 1.2M params) and full (d=512, 28M params)
+- 7 balance loss weights, 3 learning rates, 2 LR schedules
+- Temperature annealing (2.0 → 0.5)
+- GRU content vector for routing context
+- Step embeddings for routing step awareness
+- 3 architectures: Regular, Looped, Choosy
+
+Consistent finding: *sequence-level routing from a layer pool does not beat a fixed
+sequential transformer on byte-level language modeling (enwik8).* The router either
+collapses (always picks one layer) or is forced into uniform distribution (emulating
+a fixed transformer). Content-dependent specialization exists at low balance weights
+but hurts BPC rather than helping it.
+
+The hypothesis "learned dynamic routing can outperform fixed layer ordering" is NOT
+supported for this architecture + dataset combination. Possible reasons:
+1. Sequence-level mean-pool routing is too coarse (content signal washed out)
+2. enwik8 is too homogeneous (77% prose, limited content diversity)
+3. The routing overhead + gradient signal issues outweigh any specialization benefit
+4. A fixed ordering may already be near-optimal for autoregressive byte-level LM
+
+Directions for experiment 2:
+- Adaptive depth (learn when to stop) instead of layer selection
+- Per-segment routing (finer granularity without full per-token routing)
+- Multi-domain dataset where content genuinely differs
+- Investigate if the idea works better as an inference-time optimization
+  (skip layers for easy inputs) rather than a training-time architecture
+
 * Related work
 ** Universal Transformers (Dehghani et al., 2018)
 - https://arxiv.org/abs/1807.03819
